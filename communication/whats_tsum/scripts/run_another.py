@@ -251,6 +251,7 @@ def _run_example(
         n_workers=n_workers,
         devices=multi_devices,
         use_ml=use_ml_bool,
+        graph=rg_data['graph'],
     )
 
     if run_conn:

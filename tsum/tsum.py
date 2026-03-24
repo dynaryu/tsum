@@ -1991,6 +1991,7 @@ def run_rule_extraction_by_mcs(
     # ML-guided optimization
     use_ml: Optional[bool] = None,  # None=auto, True=force on, False=force off
     ml_retrain_every: int = 3,  # retrain ML classifier every N rounds
+    graph=None,  # networkx.Graph for topology-based ML auto-detection
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2051,25 +2052,42 @@ def run_rule_extraction_by_mcs(
     # ---- ML-guided optimization setup ----
     _ml_classifier = None
     _ml_active = False
+    _ml_topo_rec = None  # topology recommendation: True/False/None
     try:
-        from tsum.ml_guide import should_use_ml_guidance, BoundaryClassifier, ml_biased_sample
+        from tsum.ml_guide import (
+            should_use_ml_guidance, BoundaryClassifier, ml_biased_sample,
+            analyze_topology, _MIN_ROUNDS_FOR_ML,
+        )
         _ml_available = True
     except ImportError:
         _ml_available = False
 
     if _ml_available:
+        # Run topology analysis if graph is provided
+        if graph is not None and use_ml is None:
+            topo = analyze_topology(graph, n_vars)
+            _ml_topo_rec = topo["ml_recommended"]
+            print(f"Topology analysis: edge_conn={topo['edge_connectivity']}, "
+                  f"min_cut_ratio={topo['min_cut_ratio']:.4f}, "
+                  f"pred_density={topo['predicted_rule_density']:.3f}")
+            print(f"  → {topo['reason']}")
+
         if use_ml is True:
-            # Force on: create classifier immediately
             _ml_active = True
             _ml_classifier = BoundaryClassifier(n_vars, n_state)
-            print(f"ML-guided optimization: ENABLED (forced, n_vars={n_vars}, n_state={n_state})")
+            print(f"ML-guided optimization: ENABLED (forced)")
         elif use_ml is False:
             print(f"ML-guided optimization: DISABLED")
+        elif _ml_topo_rec is False:
+            print(f"ML-guided optimization: DISABLED (topology analysis: not recommended)")
         else:
-            # Auto mode: create classifier but don't activate until conditions met
             _ml_classifier = BoundaryClassifier(n_vars, n_state)
-            print(f"ML-guided optimization: STANDBY (activates after {_MIN_ROUNDS_FOR_ML} rounds if rules are sparse)")
-            from tsum.ml_guide import _MIN_ROUNDS_FOR_ML
+            if _ml_topo_rec is True:
+                print(f"ML-guided optimization: STANDBY (topology: recommended, "
+                      f"activates after {_MIN_ROUNDS_FOR_ML} rounds)")
+            else:
+                print(f"ML-guided optimization: STANDBY (no graph provided, "
+                      f"activates after {_MIN_ROUNDS_FOR_ML} rounds if rules are sparse)")
     elif use_ml is True:
         print(f"ML-guided optimization: UNAVAILABLE (scikit-learn not installed)")
 
@@ -2138,7 +2156,7 @@ def run_rule_extraction_by_mcs(
             _ml_active = should_use_ml_guidance(
                 n_vars, n_state, n_rules_now,
                 n_rounds=n_round, avg_rule_len=_avg_rule_len(rules_surv),
-                override=None)
+                topology_recommendation=_ml_topo_rec, override=None)
             if _ml_active:
                 print(f"ML-guided optimization: ACTIVATED (round {n_round}, {n_rules_now} rules, "
                       f"avg_len={_avg_rule_len(rules_surv):.1f})")

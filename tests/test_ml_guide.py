@@ -8,6 +8,7 @@ from tsum.ml_guide import (
     should_use_ml_guidance,
     BoundaryClassifier,
     ml_biased_sample,
+    analyze_topology,
     _HAS_SKLEARN,
 )
 
@@ -23,31 +24,37 @@ pytestmark = pytest.mark.skipif(
 class TestShouldUseMLGuidance:
 
     def test_auto_small_problem_disabled(self):
-        # 4 binary components = 8 < 40 threshold
         assert not should_use_ml_guidance(4, 2, n_rules=20, n_rounds=50, avg_rule_len=1.0)
 
     def test_auto_large_sparse_enabled(self):
-        # 25 binary components, sparse rules (avg_len=3 < 25*0.25=6.25), enough rounds
         assert should_use_ml_guidance(25, 2, n_rules=20, n_rounds=50, avg_rule_len=3.0)
 
     def test_auto_few_rules_disabled(self):
         assert not should_use_ml_guidance(25, 2, n_rules=3, n_rounds=50, avg_rule_len=3.0)
 
     def test_auto_few_rounds_disabled(self):
-        # Not enough rounds yet
         assert not should_use_ml_guidance(25, 2, n_rules=20, n_rounds=5, avg_rule_len=3.0)
 
     def test_auto_dense_rules_disabled(self):
-        # Dense rules: avg_len=59 >= 263*0.25=65.75 ... actually 59 < 65.75
-        # But avg_len=70 >= 263*0.25=65.75
         assert not should_use_ml_guidance(263, 2, n_rules=100, n_rounds=50, avg_rule_len=70.0)
 
-    def test_auto_dense_rules_real_case(self):
-        # The rg1 case: 263 edges, avg_len=59, 59 < 263*0.25=65.75
-        # This is borderline — but should still be disabled because rules are quite dense
-        # Actually 59 < 65.75, so it would pass. Let's verify the threshold matters:
-        # avg_len=66 >= 65.75 → disabled
-        assert not should_use_ml_guidance(263, 2, n_rules=100, n_rounds=50, avg_rule_len=66.0)
+    def test_topology_overrides_runtime(self):
+        # Topology says no → disabled even if runtime checks pass
+        assert not should_use_ml_guidance(
+            25, 2, n_rules=20, n_rounds=50, avg_rule_len=3.0,
+            topology_recommendation=False)
+
+    def test_topology_recommends_yes(self):
+        # Topology says yes → enabled (with enough rules/rounds)
+        assert should_use_ml_guidance(
+            25, 2, n_rules=20, n_rounds=50, avg_rule_len=3.0,
+            topology_recommendation=True)
+
+    def test_topology_yes_but_few_rounds(self):
+        # Topology says yes but not enough rounds yet
+        assert not should_use_ml_guidance(
+            25, 2, n_rules=20, n_rounds=5, avg_rule_len=3.0,
+            topology_recommendation=True)
 
     def test_override_true(self):
         assert should_use_ml_guidance(4, 2, n_rules=0, override=True)
@@ -56,8 +63,60 @@ class TestShouldUseMLGuidance:
         assert not should_use_ml_guidance(50, 2, n_rules=100, override=False)
 
     def test_ternary_sparse(self):
-        # 15 ternary = 45 >= 40, sparse rules, enough rounds
         assert should_use_ml_guidance(15, 3, n_rules=10, n_rounds=25, avg_rule_len=2.0)
+
+
+# ---------------------------------------------------------------------------
+# analyze_topology
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeTopology:
+
+    def test_high_redundancy_not_recommended(self):
+        """Dense random geometric graph (like rg1) → ML not recommended."""
+        import networkx as nx
+        G = nx.random_geometric_graph(60, 0.25, seed=7)
+        n_edges = G.number_of_edges()
+        result = analyze_topology(G, n_edges)
+        # High avg degree + moderate connectivity → dense rules
+        assert result["ml_recommended"] is False
+        assert "redundancy" in result["reason"].lower() or "dense" in result["reason"].lower()
+
+    def test_bridge_graph_recommended(self):
+        """Graph with bridge edge → low edge connectivity → ML recommended."""
+        import networkx as nx
+        G = nx.Graph()
+        # Two cliques connected by a bridge
+        G.add_edges_from([(0, 1), (0, 2), (1, 2)])  # clique 1
+        G.add_edges_from([(3, 4), (3, 5), (4, 5)])  # clique 2
+        G.add_edge(2, 3)  # bridge
+        # Add more edges to reach n_edges >= 20
+        for i in range(6, 20):
+            G.add_edge(i, i + 1)
+            G.add_edge(0, i)
+        n_edges = G.number_of_edges()
+        result = analyze_topology(G, n_edges)
+        assert result["edge_connectivity"] == 1
+        assert result["ml_recommended"] is True
+
+    def test_small_graph_not_recommended(self):
+        """Small graph → not worth ML overhead."""
+        import networkx as nx
+        G = nx.path_graph(5)
+        result = analyze_topology(G, G.number_of_edges())
+        assert result["ml_recommended"] is False
+        assert "too small" in result["reason"]
+
+    def test_returns_all_fields(self):
+        """Result dict has all expected keys."""
+        import networkx as nx
+        G = nx.cycle_graph(30)
+        result = analyze_topology(G, G.number_of_edges())
+        assert "edge_connectivity" in result
+        assert "min_cut_ratio" in result
+        assert "predicted_rule_density" in result
+        assert "ml_recommended" in result
+        assert "reason" in result
 
 
 # ---------------------------------------------------------------------------

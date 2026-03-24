@@ -26,17 +26,139 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Topology analysis
+# ---------------------------------------------------------------------------
+
+def analyze_topology(graph, n_edges: int) -> Dict:
+    """
+    Analyze graph topology to predict whether ML guidance will help.
+
+    ML-guided optimization works best when rules are sparse — i.e., when
+    only a few components are critical to system survival/failure. This
+    correlates with topological properties like low edge connectivity
+    and low min-cut to total-edges ratio.
+
+    Args:
+        graph: networkx.Graph object
+        n_edges: total number of edges
+
+    Returns:
+        dict with:
+            - edge_connectivity: min number of edges whose removal disconnects the graph
+            - min_cut_ratio: edge_connectivity / n_edges
+            - predicted_rule_density: estimated fraction of components per rule
+            - ml_recommended: bool — whether ML guidance is likely to help
+            - reason: str — explanation of the recommendation
+    """
+    import networkx as nx
+
+    result = {
+        "edge_connectivity": None,
+        "min_cut_ratio": None,
+        "predicted_rule_density": None,
+        "ml_recommended": False,
+        "reason": "",
+    }
+
+    try:
+        ec = nx.edge_connectivity(graph)
+    except nx.NetworkXError:
+        result["reason"] = "Could not compute edge connectivity"
+        return result
+
+    result["edge_connectivity"] = ec
+    result["min_cut_ratio"] = ec / n_edges if n_edges > 0 else 0.0
+
+    # Heuristic: predicted rule density correlates with how redundant the graph is.
+    # Low edge connectivity → few critical edges → sparse rules.
+    # High edge connectivity → many redundant paths → dense rules.
+    #
+    # For connectivity problems, a survival rule is roughly a spanning path/tree,
+    # and a failure rule is roughly a cut set. The min-cut size gives the smallest
+    # failure rule. Survival rules tend to be denser — they need enough edges to
+    # form a connected subgraph.
+    #
+    # Empirical observations:
+    #   - rg1 (263 edges, ec=2): avg_rule_len=59/263=0.22 — dense, ML unhelpful
+    #   - series-parallel (13 edges, ec=1): avg_rule_len=3/13=0.23 — but small, so fast anyway
+    #
+    # The key signal is: if min_cut_ratio is very small, the graph has bottleneck
+    # edges that dominate failure rules, and ML can learn which edges matter.
+    # If min_cut_ratio is larger, the graph is uniformly redundant.
+
+    min_cut_ratio = result["min_cut_ratio"]
+
+    # Estimate rule density from graph properties.
+    # For connectivity problems:
+    #   - Failure rules ≈ cut sets (size ≈ edge_connectivity)
+    #   - Survival rules ≈ paths/spanning structures
+    #
+    # The key insight from rg1 (263 edges, ec=2, avg_rule_len=59/263=0.22):
+    # Even with low edge connectivity, survival rules can be DENSE because
+    # the greedy minimiser finds long paths through redundant regions.
+    #
+    # Better predictor: average node degree relative to diameter.
+    # High avg_degree + short diameter → many redundant paths → dense survival rules.
+    # Low avg_degree + long diameter → few paths → sparse survival rules.
+
+    n_nodes = graph.number_of_nodes() if graph.number_of_nodes() > 0 else 1
+    avg_degree = 2 * n_edges / n_nodes
+
+    try:
+        diameter = nx.diameter(graph)
+    except nx.NetworkXError:
+        diameter = n_nodes - 1
+
+    # Predicted survival rule density: path_length / n_edges
+    # A survival rule is roughly a path from source to sink.
+    # path_length ≈ diameter (worst case), but in dense graphs with short diameter,
+    # the greedy minimiser often can't reduce below a large set.
+    # Better estimate: diameter * avg_degree / n_edges captures both path length
+    # and local redundancy.
+    if n_edges > 0:
+        predicted_density = min(diameter * avg_degree / n_edges, 1.0)
+    else:
+        predicted_density = 1.0
+    result["predicted_rule_density"] = predicted_density
+
+    if n_edges < 20:
+        result["reason"] = f"Graph too small ({n_edges} edges) — ML overhead not worthwhile"
+        return result
+
+    # Decision logic:
+    # ML helps when rules are sparse, meaning the graph has clear bottlenecks
+    # and low redundancy. We combine multiple signals.
+
+    if ec <= 2 and avg_degree < 6:
+        # Low connectivity AND low degree: clear bottleneck structure
+        result["ml_recommended"] = True
+        result["reason"] = (
+            f"Low edge connectivity ({ec}) with low avg degree ({avg_degree:.1f}). "
+            f"Bottleneck edges exist — ML can identify critical components."
+        )
+    elif predicted_density < 0.15:
+        # Sparse rules predicted from topology
+        result["ml_recommended"] = True
+        result["reason"] = (
+            f"Predicted sparse rules (density={predicted_density:.3f}). "
+            f"ML-guided component ordering should help."
+        )
+    else:
+        result["ml_recommended"] = False
+        result["reason"] = (
+            f"High redundancy (edge_conn={ec}, avg_degree={avg_degree:.1f}, "
+            f"pred_density={predicted_density:.3f}). Rules likely dense — "
+            f"random sampling is more efficient than ML guidance."
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Auto-determination
 # ---------------------------------------------------------------------------
 
-# Auto-detection thresholds.
-# ML-guided sampling helps most when:
-# 1. The state space is large enough that random sampling struggles to find unknowns
-# 2. Rules are sparse (each rule constrains few components), so feature importance is meaningful
-# 3. There are enough rules for the classifier to learn from
-#
-# For dense-rule problems (e.g. connectivity in well-connected graphs with low p_fail),
-# random sampling is already efficient and ML adds overhead without benefit.
+# Runtime thresholds (checked during execution when topology analysis is not available)
 _MIN_PROBLEM_SIZE = 40      # n_edges * n_state
 _MIN_RULES_FOR_ML = 10      # need enough training signal
 _MIN_ROUNDS_FOR_ML = 20     # let random sampling run first to establish baseline
@@ -49,13 +171,15 @@ def should_use_ml_guidance(
     *,
     n_rounds: int = 0,
     avg_rule_len: float = 0.0,
+    topology_recommendation: Optional[bool] = None,
     override: Optional[bool] = None,
 ) -> bool:
     """
     Decide whether ML-guided sampling/minimisation should be active.
 
-    Auto logic: enable when the problem is large enough, enough rules exist,
-    enough rounds have passed, and rules are sparse enough for ML to help.
+    Uses topology_recommendation (from analyze_topology) as the primary signal
+    when available. Falls back to runtime heuristics (rule density, round count)
+    otherwise.
 
     Args:
         n_edges: number of components/edges
@@ -63,6 +187,7 @@ def should_use_ml_guidance(
         n_rules: current total number of survival + failure rules
         n_rounds: current round number
         avg_rule_len: average number of conditions per rule
+        topology_recommendation: result of analyze_topology()["ml_recommended"]
         override: True = always on, False = always off, None = auto
     """
     if not _HAS_SKLEARN:
@@ -70,17 +195,25 @@ def should_use_ml_guidance(
     if override is not None:
         return override
 
+    # If topology analysis says no, respect it
+    if topology_recommendation is False:
+        return False
+
     # Basic size check
     if n_edges * n_state < _MIN_PROBLEM_SIZE:
         return False
-    # Need enough rules for training
+
+    # If topology says yes, still need minimum rules and rounds
     if n_rules < _MIN_RULES_FOR_ML:
         return False
-    # Let random sampling run first
     if n_rounds < _MIN_ROUNDS_FOR_ML:
         return False
-    # Only use ML when rules are sparse (< 25% of components)
-    # Dense rules mean all components look equally important
+
+    # If topology analysis was done and recommended ML, trust it
+    if topology_recommendation is True:
+        return True
+
+    # No topology info: fall back to runtime rule density check
     if avg_rule_len > 0 and avg_rule_len >= n_edges * 0.25:
         return False
 
