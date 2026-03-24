@@ -27,8 +27,14 @@ def _minimize_one_unknown(args):
     """
     Worker function for parallel minimization of unknown samples.
     Accesses module-level shared state set before the pool is created.
+    args: (comps_st_test, fval) or (comps_st_test, fval, component_order)
     """
-    comps_st_test, fval = args
+    if len(args) == 3:
+        comps_st_test, fval, component_order = args
+    else:
+        comps_st_test, fval = args
+        component_order = None
+
     sfun = _MP_SFUN
     sys_surv_st = _MP_SYS_SURV_ST
     n_state = _MP_N_STATE
@@ -41,12 +47,14 @@ def _minimize_one_unknown(args):
 
     if sys_st >= sys_surv_st:
         min_comps_st, info = minimise_surv_states_random(
-            min_comps_st0, sfun, sys_surv_st=sys_surv_st, fval=fval)
+            min_comps_st0, sfun, sys_surv_st=sys_surv_st, fval=fval,
+            component_order=component_order)
         fval = info.get('final_sys_state', fval)
     else:
         min_comps_st, info = minimise_fail_states_random(
             min_comps_st0, sfun, max_state=n_state - 1,
-            sys_fail_st=sys_surv_st - 1, fval=fval)
+            sys_fail_st=sys_surv_st - 1, fval=fval,
+            component_order=component_order)
         fval = info.get('final_sys_state', fval)
 
     return min_comps_st, sys_st, fval
@@ -105,7 +113,8 @@ def minimise_surv_states_random(
     min_state: int = 0,
     step: int = 1,
     seed: Optional[int] = None,
-    exclude_keys: Iterable[str] = ("sys",)
+    exclude_keys: Iterable[str] = ("sys",),
+    component_order: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, int], Dict[str, Any]]:
     """
     Random greedy reduction of component states.
@@ -138,7 +147,15 @@ def minimise_surv_states_random(
     # Build candidate component key deque from a random permutation
     candidates = [k for k, v in state.items()
                   if k not in set(exclude_keys) and isinstance(v, int) and v > min_state]
-    rng.shuffle(candidates)
+    if component_order is not None:
+        # Use ML-guided order, filtered to valid candidates
+        cand_set = set(candidates)
+        ordered = [c for c in component_order if c in cand_set]
+        # Append any candidates not in the order (shouldn't happen, but safe)
+        ordered += [c for c in candidates if c not in set(ordered)]
+        candidates = ordered
+    else:
+        rng.shuffle(candidates)
     dq = deque(candidates)
 
     removed_on_failure = []
@@ -208,7 +225,8 @@ def minimise_fail_states_random(
     fval: Optional[Any] = None,
     step: int = 1,
     seed: Optional[int] = None,
-    exclude_keys: Iterable[str] = ("sys",)
+    exclude_keys: Iterable[str] = ("sys",),
+    component_order: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, int], Dict[str, Any]]:
     """
     Random greedy reduction of component states.
@@ -242,7 +260,13 @@ def minimise_fail_states_random(
     # Build candidate deque from a random permutation
     candidates = [k for k, v in state.items()
                   if k not in set(exclude_keys) and isinstance(v, int) and v < max_state]
-    rng.shuffle(candidates)
+    if component_order is not None:
+        cand_set = set(candidates)
+        ordered = [c for c in component_order if c in cand_set]
+        ordered += [c for c in candidates if c not in set(ordered)]
+        candidates = ordered
+    else:
+        rng.shuffle(candidates)
     dq = deque(candidates)
 
     removed_on_survival = []
@@ -1964,6 +1988,9 @@ def run_rule_extraction_by_mcs(
     max_search_loops: int = 0,  # max batches per round for searching unknowns (0 = use n_sample // sample_batch_size)
     min_rule_search: bool = True,
     rule_update_verbose: bool = True,
+    # ML-guided optimization
+    use_ml: Optional[bool] = None,  # None=auto, True=force on, False=force off
+    ml_retrain_every: int = 3,  # retrain ML classifier every N rounds
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2020,6 +2047,30 @@ def run_rule_extraction_by_mcs(
         rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
 
     sys_val_list: List[Any] = []
+
+    # ---- ML-guided optimization setup ----
+    _ml_classifier = None
+    _ml_active = False
+    try:
+        from tsum.ml_guide import should_use_ml_guidance, BoundaryClassifier, ml_biased_sample
+        _ml_available = True
+    except ImportError:
+        _ml_available = False
+
+    if _ml_available:
+        n_rules_init = len(rules_mat_surv) + len(rules_mat_fail)
+        _ml_active = should_use_ml_guidance(n_vars, n_state, n_rules_init, override=use_ml)
+        if _ml_active or use_ml is None:
+            # Create classifier even if not yet active (auto mode may activate later)
+            _ml_classifier = BoundaryClassifier(n_vars, n_state)
+        if _ml_active:
+            print(f"ML-guided optimization: ENABLED (n_vars={n_vars}, n_state={n_state})")
+        elif use_ml is None:
+            print(f"ML-guided optimization: STANDBY (will activate when enough rules found)")
+        else:
+            print(f"ML-guided optimization: DISABLED")
+    elif use_ml is True:
+        print(f"ML-guided optimization: UNAVAILABLE (scikit-learn not installed)")
 
     metrics_path = os.path.join(output_dir, metrics_path)
     rules_surv_path = os.path.join(output_dir, surv_json_name)
@@ -2080,6 +2131,18 @@ def run_rule_extraction_by_mcs(
         _t_rules = 0.0
         _t_probs = 0.0
 
+        # ---- Re-check ML activation in auto mode ----
+        if _ml_available and _ml_classifier is not None and not _ml_active and use_ml is None:
+            n_rules_now = len(rules_mat_surv) + len(rules_mat_fail)
+            _ml_active = should_use_ml_guidance(n_vars, n_state, n_rules_now, override=None)
+            if _ml_active:
+                print(f"ML-guided optimization: ACTIVATED (round {n_round}, {n_rules_now} rules)")
+
+        # ---- Retrain ML classifier periodically ----
+        if _ml_active and _ml_classifier is not None and (n_round % ml_retrain_every) == 1:
+            if _ml_classifier.fit():
+                print(f"ML classifier retrained (round {n_round})")
+
         _ts = time.perf_counter()
         for i in range(search_loops):
             if _use_multi_gpu:
@@ -2115,9 +2178,27 @@ def run_rule_extraction_by_mcs(
                 counts["failure"]  += int(res["failure"])
                 counts["unknown"]  += int(res["unknown"])
 
+            # Feed labeled data to ML classifier
+            if _ml_classifier is not None and 'mask_survival' in res:
+                _ml_classifier.update_training_data(
+                    samples, res['mask_survival'], res['mask_failure'], res['mask_unknown'])
+
             if res['idx_unknown'].numel() > 0:
                 is_new_cand = True
                 break
+
+        # ---- ML-biased fallback: if no unknowns found, try boundary-biased sampling ----
+        if not is_new_cand and _ml_active and _ml_classifier is not None and _ml_classifier._fitted:
+            for _ in range(min(3, search_loops)):
+                samples = ml_biased_sample(probs, sample_batch_size, _ml_classifier)
+                res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
+                counts["survival"] += int(res["survival"])
+                counts["failure"]  += int(res["failure"])
+                counts["unknown"]  += int(res["unknown"])
+                i += 1
+                if res['idx_unknown'].numel() > 0:
+                    is_new_cand = True
+                    break
 
         _t_search = time.perf_counter() - _ts
 
@@ -2207,12 +2288,20 @@ def run_rule_extraction_by_mcs(
             perm = torch.randperm(len(idx_unknown))[:n_pick]
             picked_indices = idx_unknown[perm]
 
+            # Get ML-guided component order if available
+            _comp_order = None
+            if _ml_active and _ml_classifier is not None and _ml_classifier._fitted:
+                # Use survival order (least important first) — the worker will
+                # use the same order for both surv and fail minimisation
+                all_cands = [row_names[k] for k in range(n_vars)]
+                _comp_order = _ml_classifier.get_minimisation_order_surv(row_names, all_cands)
+
             tasks = []
             for idx_i in picked_indices:
                 s0 = samples[idx_i.item()]
                 sts = torch.argmax(s0, dim=1).tolist()
                 cst = {row_names[k]: int(sts[k]) for k in range(n_vars)}
-                tasks.append((cst, None))
+                tasks.append((cst, None, _comp_order))
 
             results = _pool.map(_minimize_one_unknown, tasks)
             _t_minimize = time.perf_counter() - _ts
@@ -2261,15 +2350,25 @@ def run_rule_extraction_by_mcs(
             elif isinstance(next(iter(min_comps_st0.values())), tuple):
                 min_comps_st0 = {k: v[1] for k, v in min_comps_st0.items()}
 
+            # Get ML-guided component order if available
+            _serial_comp_order = None
+            if _ml_active and _ml_classifier is not None and _ml_classifier._fitted:
+                all_cands = [row_names[k] for k in range(n_vars)]
+                _serial_comp_order = _ml_classifier.get_minimisation_order_surv(row_names, all_cands)
+
             if sys_st >= sys_surv_st:
                 if min_rule_search:
-                    min_comps_st, info = minimise_surv_states_random(min_comps_st0, sfun, sys_surv_st=sys_surv_st, fval=fval)
+                    min_comps_st, info = minimise_surv_states_random(
+                        min_comps_st0, sfun, sys_surv_st=sys_surv_st, fval=fval,
+                        component_order=_serial_comp_order)
                     fval = info.get('final_sys_state', fval)
                 else:
                     min_comps_st = get_min_surv_comps_st(min_comps_st0, sys_surv_st=sys_surv_st)
             else:
                 if min_rule_search:
-                    min_comps_st, info = minimise_fail_states_random(min_comps_st0, sfun, max_state=n_state-1, sys_fail_st=sys_surv_st-1, fval=fval)
+                    min_comps_st, info = minimise_fail_states_random(
+                        min_comps_st0, sfun, max_state=n_state-1, sys_fail_st=sys_surv_st-1, fval=fval,
+                        component_order=_serial_comp_order)
                     fval = info.get('final_sys_state', fval)
                 else:
                     min_comps_st = get_min_fail_comps_st(min_comps_st0, max_st=n_state-1, sys_fail_st=sys_surv_st-1)
