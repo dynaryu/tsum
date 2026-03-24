@@ -190,29 +190,25 @@ class BoundaryClassifier:
         Higher values mean the component is more influential in determining
         the system state (survival/failure/unknown boundary).
 
-        Uses prediction-based sensitivity: for each feature, measure how much
-        flipping its value changes the predicted class distribution.
+        Uses a cheap tree-based approach: for each split in the ensemble,
+        count how often each feature is used. This is O(n_trees) not
+        O(n_vars * n_samples) like permutation importance.
         """
         if not self._fitted:
             return None
 
-        # Use a reference sample (median/mode of training data)
-        X = np.concatenate(self._X, axis=0)
-        # Take a subsample for speed
-        rng = np.random.default_rng(0)
-        if len(X) > 1000:
-            X = X[rng.choice(len(X), 1000, replace=False)]
-
-        # Baseline predictions
-        base_proba = self._clf.predict_proba(X)  # (N, n_classes)
-
+        # Count feature usage across all trees in the ensemble
         importance = np.zeros(self.n_vars, dtype=np.float64)
-        for j in range(self.n_vars):
-            X_perm = X.copy()
-            rng.shuffle(X_perm[:, j])
-            perm_proba = self._clf.predict_proba(X_perm)
-            # Mean absolute change in predicted probabilities
-            importance[j] = np.abs(perm_proba - base_proba).mean()
+        for predictors_at_iter in self._clf._predictors:
+            for predictor in predictors_at_iter:
+                nodes = predictor.nodes
+                if hasattr(nodes, 'dtype') and 'feature_idx' in nodes.dtype.names:
+                    for node in nodes:
+                        is_leaf = bool(node['is_leaf']) if 'is_leaf' in nodes.dtype.names else False
+                        if not is_leaf:
+                            fi = int(node['feature_idx'])
+                            if 0 <= fi < self.n_vars:
+                                importance[fi] += 1
 
         # Normalize
         total = importance.sum()

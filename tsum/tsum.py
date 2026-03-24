@@ -2178,11 +2178,6 @@ def run_rule_extraction_by_mcs(
                 counts["failure"]  += int(res["failure"])
                 counts["unknown"]  += int(res["unknown"])
 
-            # Feed labeled data to ML classifier
-            if _ml_classifier is not None and 'mask_survival' in res:
-                _ml_classifier.update_training_data(
-                    samples, res['mask_survival'], res['mask_failure'], res['mask_unknown'])
-
             if res['idx_unknown'].numel() > 0:
                 is_new_cand = True
                 break
@@ -2199,6 +2194,11 @@ def run_rule_extraction_by_mcs(
                 if res['idx_unknown'].numel() > 0:
                     is_new_cand = True
                     break
+
+        # Feed last batch of labeled data to ML classifier (once per round)
+        if _ml_classifier is not None and res is not None and 'mask_survival' in res:
+            _ml_classifier.update_training_data(
+                samples, res['mask_survival'], res['mask_failure'], res['mask_unknown'])
 
         _t_search = time.perf_counter() - _ts
 
@@ -2288,13 +2288,14 @@ def run_rule_extraction_by_mcs(
             perm = torch.randperm(len(idx_unknown))[:n_pick]
             picked_indices = idx_unknown[perm]
 
-            # Get ML-guided component order if available
+            # Get ML-guided component order if available and rules are sparse
+            # (dense rules = most components in every rule, so ordering doesn't help)
             _comp_order = None
             if _ml_active and _ml_classifier is not None and _ml_classifier._fitted:
-                # Use survival order (least important first) — the worker will
-                # use the same order for both surv and fail minimisation
-                all_cands = [row_names[k] for k in range(n_vars)]
-                _comp_order = _ml_classifier.get_minimisation_order_surv(row_names, all_cands)
+                avg_len = _avg_rule_len(rules_surv)
+                if avg_len > 0 and avg_len < n_vars * 0.25:
+                    all_cands = [row_names[k] for k in range(n_vars)]
+                    _comp_order = _ml_classifier.get_minimisation_order_surv(row_names, all_cands)
 
             tasks = []
             for idx_i in picked_indices:
@@ -2350,11 +2351,13 @@ def run_rule_extraction_by_mcs(
             elif isinstance(next(iter(min_comps_st0.values())), tuple):
                 min_comps_st0 = {k: v[1] for k, v in min_comps_st0.items()}
 
-            # Get ML-guided component order if available
+            # Get ML-guided component order if rules are sparse
             _serial_comp_order = None
             if _ml_active and _ml_classifier is not None and _ml_classifier._fitted:
-                all_cands = [row_names[k] for k in range(n_vars)]
-                _serial_comp_order = _ml_classifier.get_minimisation_order_surv(row_names, all_cands)
+                avg_len = _avg_rule_len(rules_surv)
+                if avg_len > 0 and avg_len < n_vars * 0.25:
+                    all_cands = [row_names[k] for k in range(n_vars)]
+                    _serial_comp_order = _ml_classifier.get_minimisation_order_surv(row_names, all_cands)
 
             if sys_st >= sys_surv_st:
                 if min_rule_search:
