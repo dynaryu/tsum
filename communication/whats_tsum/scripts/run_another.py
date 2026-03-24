@@ -208,6 +208,7 @@ def _run_example(
     save_every: int = 0,
     seed: int = 7,
     use_igraph: bool = False,
+    use_ml: bool = None,
 ):
     """Common logic for all examples."""
     if use_igraph and not HAS_IGRAPH:
@@ -245,6 +246,7 @@ def _run_example(
         max_search_loops=max_search_loops,
         n_workers=n_workers,
         devices=multi_devices,
+        use_ml=use_ml,
     )
 
     if run_conn:
@@ -275,6 +277,7 @@ _common_opts = dict(
     sample_batch_size=typer.Option(100_000, help="Samples per GPU batch. Must fit in GPU VRAM."),
     max_search_loops=typer.Option(0, help="Max batches per round for searching unknowns. 0 = use n_sample/sample_batch_size. Set e.g. 100 to cap search and avoid long empty rounds."),
     use_igraph=typer.Option(False, help="Use igraph (C-based) instead of NetworkX for connectivity. 10-100x faster. Requires: pip install python-igraph"),
+    use_ml=typer.Option(None, help="ML-guided sampling/minimisation. None=auto (enabled for large problems), True=force on, False=force off. Requires: pip install scikit-learn"),
 )
 
 
@@ -286,6 +289,7 @@ def example1(
     sample_batch_size: int = _common_opts['sample_batch_size'],
     max_search_loops: int = _common_opts['max_search_loops'],
     use_igraph: bool = _common_opts['use_igraph'],
+    use_ml: bool = _common_opts['use_ml'],
     output_str: str = typer.Option("", help="str for output folder"),
 ):
     _run_example(
@@ -296,7 +300,7 @@ def example1(
         global_conn_dir="tsum_global" + output_str,
         devices=devices, n_workers=n_workers, n_sample=n_sample,
         sample_batch_size=sample_batch_size, max_search_loops=max_search_loops,
-        use_igraph=use_igraph,
+        use_igraph=use_igraph, use_ml=use_ml,
     )
 
 
@@ -308,6 +312,7 @@ def example2(
     sample_batch_size: int = _common_opts['sample_batch_size'],
     max_search_loops: int = _common_opts['max_search_loops'],
     use_igraph: bool = _common_opts['use_igraph'],
+    use_ml: bool = _common_opts['use_ml'],
     output_str: str = typer.Option("", help="str for output folder"),
 ):
     _run_example(
@@ -316,7 +321,7 @@ def example2(
         global_conn_dir="tsum_global" + output_str,
         devices=devices, n_workers=n_workers, n_sample=n_sample,
         sample_batch_size=sample_batch_size, max_search_loops=max_search_loops,
-        use_igraph=use_igraph,
+        use_igraph=use_igraph, use_ml=use_ml,
     )
 
 
@@ -328,6 +333,7 @@ def example3(
     sample_batch_size: int = _common_opts['sample_batch_size'],
     max_search_loops: int = _common_opts['max_search_loops'],
     use_igraph: bool = _common_opts['use_igraph'],
+    use_ml: bool = _common_opts['use_ml'],
     output_str: str = typer.Option("", help="str for output folder"),
 ):
     _run_example(
@@ -336,7 +342,7 @@ def example3(
         global_conn_dir="tsum_global_conn" + output_str,
         devices=devices, n_workers=n_workers, n_sample=n_sample,
         sample_batch_size=sample_batch_size, max_search_loops=max_search_loops,
-        use_igraph=use_igraph,
+        use_igraph=use_igraph, use_ml=use_ml,
     )
 
 
@@ -348,6 +354,7 @@ def example4(
     sample_batch_size: int = _common_opts['sample_batch_size'],
     max_search_loops: int = _common_opts['max_search_loops'],
     use_igraph: bool = _common_opts['use_igraph'],
+    use_ml: bool = _common_opts['use_ml'],
     output_str: str = typer.Option("", help="str for output folder"),
 ):
     _run_example(
@@ -358,7 +365,7 @@ def example4(
         global_conn_dir="tsum_global_conn" + output_str,
         devices=devices, n_workers=n_workers, n_sample=n_sample,
         sample_batch_size=sample_batch_size, max_search_loops=max_search_loops,
-        use_igraph=use_igraph,
+        use_igraph=use_igraph, use_ml=use_ml,
     )
 
 
