@@ -29,10 +29,17 @@ except ImportError:
 # Auto-determination
 # ---------------------------------------------------------------------------
 
-# Minimum problem size (n_edges * n_state) to consider ML guidance
-_MIN_PROBLEM_SIZE = 40
-# Minimum number of rules before the classifier has enough training signal
-_MIN_RULES_FOR_ML = 5
+# Auto-detection thresholds.
+# ML-guided sampling helps most when:
+# 1. The state space is large enough that random sampling struggles to find unknowns
+# 2. Rules are sparse (each rule constrains few components), so feature importance is meaningful
+# 3. There are enough rules for the classifier to learn from
+#
+# For dense-rule problems (e.g. connectivity in well-connected graphs with low p_fail),
+# random sampling is already efficient and ML adds overhead without benefit.
+_MIN_PROBLEM_SIZE = 40      # n_edges * n_state
+_MIN_RULES_FOR_ML = 10      # need enough training signal
+_MIN_ROUNDS_FOR_ML = 20     # let random sampling run first to establish baseline
 
 
 def should_use_ml_guidance(
@@ -40,25 +47,44 @@ def should_use_ml_guidance(
     n_state: int,
     n_rules: int,
     *,
+    n_rounds: int = 0,
+    avg_rule_len: float = 0.0,
     override: Optional[bool] = None,
 ) -> bool:
     """
     Decide whether ML-guided sampling/minimisation should be active.
 
-    Auto logic: enable when the problem is large enough for ML overhead to
-    pay off AND enough rules exist for meaningful training data.
+    Auto logic: enable when the problem is large enough, enough rules exist,
+    enough rounds have passed, and rules are sparse enough for ML to help.
 
     Args:
         n_edges: number of components/edges
         n_state: number of states per component
         n_rules: current total number of survival + failure rules
+        n_rounds: current round number
+        avg_rule_len: average number of conditions per rule
         override: True = always on, False = always off, None = auto
     """
     if not _HAS_SKLEARN:
         return False
     if override is not None:
         return override
-    return (n_edges * n_state >= _MIN_PROBLEM_SIZE) and (n_rules >= _MIN_RULES_FOR_ML)
+
+    # Basic size check
+    if n_edges * n_state < _MIN_PROBLEM_SIZE:
+        return False
+    # Need enough rules for training
+    if n_rules < _MIN_RULES_FOR_ML:
+        return False
+    # Let random sampling run first
+    if n_rounds < _MIN_ROUNDS_FOR_ML:
+        return False
+    # Only use ML when rules are sparse (< 25% of components)
+    # Dense rules mean all components look equally important
+    if avg_rule_len > 0 and avg_rule_len >= n_edges * 0.25:
+        return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------

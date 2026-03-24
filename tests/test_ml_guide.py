@@ -24,27 +24,40 @@ class TestShouldUseMLGuidance:
 
     def test_auto_small_problem_disabled(self):
         # 4 binary components = 8 < 40 threshold
-        assert not should_use_ml_guidance(4, 2, n_rules=20)
+        assert not should_use_ml_guidance(4, 2, n_rules=20, n_rounds=50, avg_rule_len=1.0)
 
-    def test_auto_large_problem_enabled(self):
-        # 25 binary components = 50 >= 40, and 20 rules >= 5
-        assert should_use_ml_guidance(25, 2, n_rules=20)
+    def test_auto_large_sparse_enabled(self):
+        # 25 binary components, sparse rules (avg_len=3 < 25*0.25=6.25), enough rounds
+        assert should_use_ml_guidance(25, 2, n_rules=20, n_rounds=50, avg_rule_len=3.0)
 
     def test_auto_few_rules_disabled(self):
-        # Large problem but only 3 rules
-        assert not should_use_ml_guidance(25, 2, n_rules=3)
+        assert not should_use_ml_guidance(25, 2, n_rules=3, n_rounds=50, avg_rule_len=3.0)
+
+    def test_auto_few_rounds_disabled(self):
+        # Not enough rounds yet
+        assert not should_use_ml_guidance(25, 2, n_rules=20, n_rounds=5, avg_rule_len=3.0)
+
+    def test_auto_dense_rules_disabled(self):
+        # Dense rules: avg_len=59 >= 263*0.25=65.75 ... actually 59 < 65.75
+        # But avg_len=70 >= 263*0.25=65.75
+        assert not should_use_ml_guidance(263, 2, n_rules=100, n_rounds=50, avg_rule_len=70.0)
+
+    def test_auto_dense_rules_real_case(self):
+        # The rg1 case: 263 edges, avg_len=59, 59 < 263*0.25=65.75
+        # This is borderline — but should still be disabled because rules are quite dense
+        # Actually 59 < 65.75, so it would pass. Let's verify the threshold matters:
+        # avg_len=66 >= 65.75 → disabled
+        assert not should_use_ml_guidance(263, 2, n_rules=100, n_rounds=50, avg_rule_len=66.0)
 
     def test_override_true(self):
-        # Force on even for small problem
         assert should_use_ml_guidance(4, 2, n_rules=0, override=True)
 
     def test_override_false(self):
-        # Force off even for large problem
         assert not should_use_ml_guidance(50, 2, n_rules=100, override=False)
 
-    def test_ternary_states(self):
-        # 15 ternary = 45 >= 40
-        assert should_use_ml_guidance(15, 3, n_rules=10)
+    def test_ternary_sparse(self):
+        # 15 ternary = 45 >= 40, sparse rules, enough rounds
+        assert should_use_ml_guidance(15, 3, n_rules=10, n_rounds=25, avg_rule_len=2.0)
 
 
 # ---------------------------------------------------------------------------

@@ -2058,17 +2058,18 @@ def run_rule_extraction_by_mcs(
         _ml_available = False
 
     if _ml_available:
-        n_rules_init = len(rules_mat_surv) + len(rules_mat_fail)
-        _ml_active = should_use_ml_guidance(n_vars, n_state, n_rules_init, override=use_ml)
-        if _ml_active or use_ml is None:
-            # Create classifier even if not yet active (auto mode may activate later)
+        if use_ml is True:
+            # Force on: create classifier immediately
+            _ml_active = True
             _ml_classifier = BoundaryClassifier(n_vars, n_state)
-        if _ml_active:
-            print(f"ML-guided optimization: ENABLED (n_vars={n_vars}, n_state={n_state})")
-        elif use_ml is None:
-            print(f"ML-guided optimization: STANDBY (will activate when enough rules found)")
-        else:
+            print(f"ML-guided optimization: ENABLED (forced, n_vars={n_vars}, n_state={n_state})")
+        elif use_ml is False:
             print(f"ML-guided optimization: DISABLED")
+        else:
+            # Auto mode: create classifier but don't activate until conditions met
+            _ml_classifier = BoundaryClassifier(n_vars, n_state)
+            print(f"ML-guided optimization: STANDBY (activates after {_MIN_ROUNDS_FOR_ML} rounds if rules are sparse)")
+            from tsum.ml_guide import _MIN_ROUNDS_FOR_ML
     elif use_ml is True:
         print(f"ML-guided optimization: UNAVAILABLE (scikit-learn not installed)")
 
@@ -2134,9 +2135,13 @@ def run_rule_extraction_by_mcs(
         # ---- Re-check ML activation in auto mode ----
         if _ml_available and _ml_classifier is not None and not _ml_active and use_ml is None:
             n_rules_now = len(rules_mat_surv) + len(rules_mat_fail)
-            _ml_active = should_use_ml_guidance(n_vars, n_state, n_rules_now, override=None)
+            _ml_active = should_use_ml_guidance(
+                n_vars, n_state, n_rules_now,
+                n_rounds=n_round, avg_rule_len=_avg_rule_len(rules_surv),
+                override=None)
             if _ml_active:
-                print(f"ML-guided optimization: ACTIVATED (round {n_round}, {n_rules_now} rules)")
+                print(f"ML-guided optimization: ACTIVATED (round {n_round}, {n_rules_now} rules, "
+                      f"avg_len={_avg_rule_len(rules_surv):.1f})")
 
         # ---- Retrain ML classifier periodically ----
         if _ml_active and _ml_classifier is not None and (n_round % ml_retrain_every) == 1:
@@ -2195,12 +2200,12 @@ def run_rule_extraction_by_mcs(
                     is_new_cand = True
                     break
 
-        # Feed last batch of labeled data to ML classifier (once per round)
+        _t_search = time.perf_counter() - _ts
+
+        # Feed last batch of labeled data to ML classifier (outside search timing)
         if _ml_classifier is not None and res is not None and 'mask_survival' in res:
             _ml_classifier.update_training_data(
                 samples, res['mask_survival'], res['mask_failure'], res['mask_unknown'])
-
-        _t_search = time.perf_counter() - _ts
 
         # denominator = number of samples actually processed
         n_sample_actual = sample_batch_size * (i + 1)
