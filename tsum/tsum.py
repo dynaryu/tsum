@@ -1732,6 +1732,122 @@ def classify_samples_with_indices(
 
     return result
 
+def evaluate_event_probs(
+    rules_mat_surv: Tensor,
+    rules_mat_fail: Tensor,
+    event_probs: Union[List[Tensor], Tensor],
+    *,
+    row_names: Optional[Sequence[str]] = None,
+    s_fun: Optional[Callable] = None,
+    sys_surv_st: int = 1,
+    n_sample: int = 1_000_000,
+    sample_batch_size: int = 100_000,
+) -> List[Dict[str, float]]:
+    """
+    Estimate system probabilities for multiple events using pre-computed rules.
+
+    This is the "Stage 2 only" function for risk assessment. Reference states
+    (rules) are computed once via run_rule_extraction_by_mcs (Stage 1) and
+    reused across all events.  Each event supplies its own component probability
+    vector, representing, e.g., a different hazard scenario.
+
+    Args:
+        rules_mat_surv: (n_rules_surv, n_var, n_state) survival rule tensor
+        rules_mat_fail: (n_rules_fail, n_var, n_state) failure rule tensor
+        event_probs:    list of (n_var, n_state) tensors, one per event,
+                        OR a single (n_events, n_var, n_state) stacked tensor.
+                        Each slice gives per-component categorical probabilities.
+        row_names:      component names (required if s_fun is provided)
+        s_fun:          optional system function to resolve unknown samples.
+                        Signature: s_fun(comps_st: Dict[str,int]) -> (fval, sys_st, ...)
+                        If None, unknowns are reported as-is.
+        sys_surv_st:    system state threshold for survival (>= this = survival)
+        n_sample:       number of Monte Carlo samples per event
+        sample_batch_size: samples per GPU batch (controls memory)
+
+    Returns:
+        List of dicts, one per event:
+            {'survival': float, 'failure': float, 'unknown': float}
+        Probabilities sum to ~1.0.  If s_fun is provided, 'unknown' is 0.
+    """
+    # -- normalise event_probs to a list of 2D tensors --
+    if isinstance(event_probs, Tensor) and event_probs.ndim == 3:
+        event_probs = [event_probs[i] for i in range(event_probs.shape[0])]
+    n_events = len(event_probs)
+
+    # -- move rules to the same device as the first prob tensor --
+    device = event_probs[0].device
+    rules_mat_surv = _ensure_rules_tensor(rules_mat_surv, device)
+    rules_mat_fail = _ensure_rules_tensor(rules_mat_fail, device)
+
+    # -- pre-compute flattened ~rules (shared across events) --
+    not_surv_flat = None
+    if rules_mat_surv.ndim == 3 and rules_mat_surv.shape[0] > 0:
+        not_surv_flat = (~rules_mat_surv.bool()).reshape(
+            rules_mat_surv.shape[0], -1
+        ).to(dtype=torch.float16)
+
+    not_fail_flat = None
+    if rules_mat_fail.ndim == 3 and rules_mat_fail.shape[0] > 0:
+        not_fail_flat = (~rules_mat_fail.bool()).reshape(
+            rules_mat_fail.shape[0], -1
+        ).to(dtype=torch.float16)
+
+    resolve_unknowns = s_fun is not None
+    if resolve_unknowns and row_names is None:
+        raise ValueError("row_names is required when s_fun is provided")
+    n_comps = event_probs[0].shape[0]
+
+    results = []
+    for ev_idx in range(n_events):
+        probs_ev = event_probs[ev_idx].to(device)
+        counts = {"survival": 0, "failure": 0, "unknown": 0}
+        remaining = n_sample
+
+        while remaining > 0:
+            b = min(sample_batch_size, remaining)
+            samples = sample_categorical(probs_ev, b)
+            samples_flat = samples.reshape(b, -1).to(dtype=torch.float16)
+
+            # survival check
+            surv_mask = torch.zeros(b, dtype=torch.bool, device=device)
+            if not_surv_flat is not None:
+                surv_mask = _check_any_subset(samples_flat, not_surv_flat)
+
+            # failure check (only remaining)
+            fail_mask = torch.zeros(b, dtype=torch.bool, device=device)
+            rem_mask = ~surv_mask
+            if not_fail_flat is not None and rem_mask.any():
+                fail_sub = _check_any_subset(samples_flat[rem_mask], not_fail_flat)
+                fail_mask[rem_mask] = fail_sub
+
+            counts["survival"] += int(surv_mask.sum().item())
+            counts["failure"] += int(fail_mask.sum().item())
+
+            unk_mask = ~surv_mask & ~fail_mask
+            n_unk = int(unk_mask.sum().item())
+
+            if n_unk > 0 and resolve_unknowns:
+                unk_indices = torch.where(unk_mask)[0]
+                for j in unk_indices.tolist():
+                    states = torch.argmax(samples[j], dim=1).tolist()
+                    comps = {row_names[k]: int(states[k]) for k in range(n_comps)}
+                    _, sys_st, _ = s_fun(comps)
+                    if sys_st >= sys_surv_st:
+                        counts["survival"] += 1
+                    else:
+                        counts["failure"] += 1
+            else:
+                counts["unknown"] += n_unk
+
+            remaining -= b
+
+        total = float(n_sample)
+        results.append({k: counts[k] / total for k in counts})
+
+    return results
+
+
 def get_comp_cond_sys_prob(
     rules_mat_surv: Tensor,
     rules_mat_fail: Tensor,

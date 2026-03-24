@@ -1346,3 +1346,125 @@ def test_get_comp_cond_sys_prob__two_state(def_five_comp):
 
     assert cond_probs["failure"]  == pytest.approx(0.02152, rel=2e-2, abs=5e-4)
     assert cond_probs["survival"] == pytest.approx(0.97848, rel=2e-2, abs=5e-4)
+
+
+# ---------- evaluate_event_probs tests ----------
+
+def test_evaluate_event_probs_single_event(def_five_comp):
+    """Single event should match get_comp_cond_sys_prob with no conditioning."""
+    failure_rules, survival_rules, probs, row_names, s_fun = def_five_comp
+
+    torch.manual_seed(42)
+    result = tsum.evaluate_event_probs(
+        rules_mat_surv=survival_rules,
+        rules_mat_fail=failure_rules,
+        event_probs=[probs],
+        row_names=row_names,
+        s_fun=s_fun,
+        sys_surv_st=1,
+        n_sample=300_000,
+        sample_batch_size=100_000,
+    )
+
+    assert len(result) == 1
+    r = result[0]
+    assert r["unknown"] == 0.0  # s_fun resolves all unknowns
+    assert r["survival"] == pytest.approx(0.978, rel=2e-2, abs=5e-3)
+    assert r["failure"] == pytest.approx(0.022, rel=2e-2, abs=5e-3)
+
+
+def test_evaluate_event_probs_multiple_events(def_five_comp):
+    """Different probability vectors should give different system probabilities."""
+    failure_rules, survival_rules, probs, row_names, _ = def_five_comp
+
+    # Event 1: low failure prob (same as baseline)
+    probs_low = probs.clone()  # p_fail=0.1
+
+    # Event 2: high failure prob
+    probs_high = torch.tensor([[0.5, 0.5]] * 5, dtype=torch.float32,
+                              device=probs.device)
+
+    torch.manual_seed(42)
+    results = tsum.evaluate_event_probs(
+        rules_mat_surv=survival_rules,
+        rules_mat_fail=failure_rules,
+        event_probs=[probs_low, probs_high],
+        n_sample=200_000,
+        sample_batch_size=100_000,
+    )
+
+    assert len(results) == 2
+    # With low failure probs, survival should be high
+    assert results[0]["survival"] > 0.9
+    # With 50% failure probs, survival should be much lower
+    assert results[1]["survival"] < results[0]["survival"]
+    # Both should sum to ~1
+    for r in results:
+        assert r["survival"] + r["failure"] + r["unknown"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_evaluate_event_probs_stacked_tensor(def_five_comp):
+    """Accept a (n_events, n_var, n_state) stacked tensor as input."""
+    failure_rules, survival_rules, probs, row_names, _ = def_five_comp
+
+    probs2 = torch.tensor([[0.3, 0.7]] * 5, dtype=torch.float32,
+                          device=probs.device)
+    stacked = torch.stack([probs, probs2], dim=0)  # (2, 5, 2)
+
+    torch.manual_seed(42)
+    results = tsum.evaluate_event_probs(
+        rules_mat_surv=survival_rules,
+        rules_mat_fail=failure_rules,
+        event_probs=stacked,
+        n_sample=100_000,
+        sample_batch_size=50_000,
+    )
+
+    assert len(results) == 2
+
+
+def test_evaluate_event_probs_no_sfun_reports_unknown(def_five_comp):
+    """Without s_fun, unknowns should be reported rather than resolved."""
+    failure_rules, survival_rules, probs, row_names, _ = def_five_comp
+
+    torch.manual_seed(42)
+    results = tsum.evaluate_event_probs(
+        rules_mat_surv=survival_rules,
+        rules_mat_fail=failure_rules,
+        event_probs=[probs],
+        n_sample=100_000,
+        sample_batch_size=50_000,
+    )
+
+    r = results[0]
+    # Without s_fun, some samples may be unknown (depending on rule coverage)
+    assert r["survival"] + r["failure"] + r["unknown"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_evaluate_event_probs_certain_survival():
+    """All components certain to survive -> P(survival) = 1.0."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # One survival rule: all components >= 1
+    survival_rules = torch.tensor(
+        [[[0, 1], [0, 1], [0, 1]]], dtype=torch.float32, device=device
+    )
+    failure_rules = torch.tensor(
+        [[[1, 0], [1, 0], [1, 0]]], dtype=torch.float32, device=device
+    )
+
+    # All components certainly in state 1
+    probs_certain = torch.tensor(
+        [[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]], dtype=torch.float32, device=device
+    )
+
+    results = tsum.evaluate_event_probs(
+        rules_mat_surv=survival_rules,
+        rules_mat_fail=failure_rules,
+        event_probs=[probs_certain],
+        n_sample=10_000,
+    )
+
+    assert results[0]["survival"] == 1.0
+    assert results[0]["failure"] == 0.0
+    assert results[0]["unknown"] == 0.0
