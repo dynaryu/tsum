@@ -31,12 +31,16 @@ except ImportError:
 
 def analyze_topology(graph, n_edges: int) -> Dict:
     """
-    Analyze graph topology to predict whether ML guidance will help.
+    Analyze graph topology to predict whether ML guidance *might* help.
 
-    ML-guided optimization works best when rules are sparse — i.e., when
-    only a few components are critical to system survival/failure. This
-    correlates with topological properties like low edge connectivity
-    and low min-cut to total-edges ratio.
+    This is a necessary but not sufficient condition. The topology tells us
+    about graph structure (bottlenecks, redundancy), but the actual rule
+    density depends on the system function (e.g. 1-OD vs global connectivity
+    on the same graph can produce very different rule densities).
+
+    When ml_recommended=True, ML is worth trying — but the runtime rule
+    density check (avg_rule_len < 25% of n_edges) is still applied.
+    When ml_recommended=False, ML is disabled without further checks.
 
     Args:
         graph: networkx.Graph object
@@ -47,7 +51,7 @@ def analyze_topology(graph, n_edges: int) -> Dict:
             - edge_connectivity: min number of edges whose removal disconnects the graph
             - min_cut_ratio: edge_connectivity / n_edges
             - predicted_rule_density: estimated fraction of components per rule
-            - ml_recommended: bool — whether ML guidance is likely to help
+            - ml_recommended: bool — whether ML guidance is worth trying
             - reason: str — explanation of the recommendation
     """
     import networkx as nx
@@ -202,18 +206,15 @@ def should_use_ml_guidance(
     # Basic size check
     if n_edges * n_state < _MIN_PROBLEM_SIZE:
         return False
-
-    # If topology says yes, still need minimum rules and rounds
     if n_rules < _MIN_RULES_FOR_ML:
         return False
     if n_rounds < _MIN_ROUNDS_FOR_ML:
         return False
 
-    # If topology analysis was done and recommended ML, trust it
-    if topology_recommendation is True:
-        return True
-
-    # No topology info: fall back to runtime rule density check
+    # Rule density check — always applied, even with topology recommendation.
+    # The same graph can produce sparse rules for one system function (e.g. 1-OD
+    # connectivity) and dense rules for another (e.g. global connectivity).
+    # Topology analysis predicts graph structure but not system function behaviour.
     if avg_rule_len > 0 and avg_rule_len >= n_edges * 0.25:
         return False
 

@@ -44,10 +44,17 @@ class TestShouldUseMLGuidance:
             25, 2, n_rules=20, n_rounds=50, avg_rule_len=3.0,
             topology_recommendation=False)
 
-    def test_topology_recommends_yes(self):
-        # Topology says yes → enabled (with enough rules/rounds)
+    def test_topology_recommends_yes_sparse_rules(self):
+        # Topology says yes + sparse rules → enabled
         assert should_use_ml_guidance(
             25, 2, n_rules=20, n_rounds=50, avg_rule_len=3.0,
+            topology_recommendation=True)
+
+    def test_topology_yes_but_dense_rules(self):
+        # Topology says yes but rules are dense → disabled
+        # (same graph can produce dense rules for global connectivity)
+        assert not should_use_ml_guidance(
+            296, 2, n_rules=100, n_rounds=50, avg_rule_len=119.0,
             topology_recommendation=True)
 
     def test_topology_yes_but_few_rounds(self):
