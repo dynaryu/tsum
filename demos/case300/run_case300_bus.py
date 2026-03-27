@@ -14,6 +14,8 @@ Usage:
     python run_case300_bus.py --devices cuda:0,cuda:1
     python run_case300_bus.py --bias-factor 5  # biased sampling for all rounds
     python run_case300_bus.py --bias-factor 5 --bias-rounds 500  # biased for 500 rounds, then true probs
+    python run_case300_bus.py --bias-factor 5 --output-dir results_bf5
+    python run_case300_bus.py --bias-factor 10 --output-dir results_bf10
 """
 
 import sys
@@ -47,6 +49,8 @@ def parse_args():
                         help="Bias factor for discovery sampling (0=off, typical: 5-10)")
     parser.add_argument("--bias-rounds", type=int, default=0,
                         help="Use biased sampling for first N rounds, then switch to true probs (0=all rounds)")
+    parser.add_argument("--output-dir", type=str, default="",
+                        help="Output directory (default: tsum_results_bus)")
     return parser.parse_args()
 
 
@@ -131,7 +135,7 @@ def main():
     # ---------------------------------------------------------------
     # 4. Run TSUM rule extraction
     # ---------------------------------------------------------------
-    output_dir = HERE / "tsum_results_bus"
+    output_dir = Path(args.output_dir) if args.output_dir else HERE / "tsum_results_bus"
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     1,000,000 per round (batch 100,000)")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
