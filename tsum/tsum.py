@@ -2012,6 +2012,7 @@ def run_rule_extraction_by_mcs(
     rule_update_verbose: bool = True,
     # Biased sampling for rule discovery
     discovery_probs: Optional[torch.Tensor] = None,  # biased probs for search phase; true probs used for estimation
+    bias_rounds: int = 0,  # use discovery_probs for first N rounds, then switch to true probs (0 = biased for all rounds)
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2090,12 +2091,16 @@ def run_rule_extraction_by_mcs(
         print(f"Parallel mode: {n_workers} CPU workers for sfun + minimization")
 
     # ---- biased search probs ----
-    search_probs = discovery_probs if discovery_probs is not None else probs
-    if discovery_probs is not None:
+    _using_biased = discovery_probs is not None
+    search_probs = probs
+    if _using_biased:
         assert discovery_probs.shape == probs.shape, (
             f"discovery_probs shape {discovery_probs.shape} != probs shape {probs.shape}")
         search_probs = discovery_probs.to(device)
-        print(f"Biased sampling: using discovery_probs for search phase")
+        if bias_rounds > 0:
+            print(f"Biased sampling: discovery_probs for first {bias_rounds} rounds, then true probs")
+        else:
+            print(f"Biased sampling: using discovery_probs for all rounds")
 
     # ---- multi-GPU setup ----
     _use_multi_gpu = False
@@ -2120,6 +2125,14 @@ def run_rule_extraction_by_mcs(
     while is_new_cand and (unk_prob > unk_prob_thres if unk_prob_opt == "abs" else unk_prob / (min([last_probs["failure"]+1e-12, last_probs["survival"]+1e-12])) > unk_prob_thres):
         n_round += 1
         t0 = time.perf_counter()
+
+        # ---- auto-switch from biased to true probs ----
+        if _using_biased and bias_rounds > 0 and n_round == bias_rounds + 1:
+            search_probs = probs
+            if _use_multi_gpu:
+                _gpu_search_probs = [probs.to(d) for d in _gpu_devices]
+            _using_biased = False
+            print(f"*** Switching from biased to true probs at round {n_round} ***")
 
         print("---")
         print(f"Round: {n_round}, Unk. prob.: {unk_prob:.3e}")
@@ -2183,7 +2196,7 @@ def run_rule_extraction_by_mcs(
         n_sample_actual = sample_batch_size * (i + 1)
         # When using biased search probs, the counts don't reflect true probabilities.
         # Use last_probs from previous estimation; only update from true-probs estimation.
-        if discovery_probs is None:
+        if not _using_biased:
             samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
             unk_prob = samp_probs["unknown"]
             last_probs.update(samp_probs)
@@ -2194,7 +2207,7 @@ def run_rule_extraction_by_mcs(
             # When search is capped, the unk_prob estimate from search_loops is rough;
             # force a full probability update to get an accurate termination check.
             # Also force when using biased discovery_probs (search counts don't reflect true probs).
-            needs_full_estimate = (discovery_probs is not None) or (search_loops < total_loops) or (n_round % prob_update_every) == 0
+            needs_full_estimate = _using_biased or (search_loops < total_loops) or (n_round % prob_update_every) == 0
             if needs_full_estimate:
                 # refresh with a full estimate
                 loops = max(n_sample // sample_batch_size, 1)

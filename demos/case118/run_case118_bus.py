@@ -12,7 +12,8 @@ Usage:
     python run_case118_bus.py
     python run_case118_bus.py --unk-prob-thres 1e-4
     python run_case118_bus.py --devices cuda:0,cuda:1
-    python run_case118_bus.py --bias-factor 5  # biased sampling for faster rule discovery
+    python run_case118_bus.py --bias-factor 10  # biased sampling for all rounds
+    python run_case118_bus.py --bias-factor 10 --bias-rounds 200  # biased for 200 rounds, then true probs
 """
 
 import sys
@@ -44,6 +45,8 @@ def parse_args():
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
     parser.add_argument("--bias-factor", type=float, default=0.0,
                         help="Bias factor for discovery sampling (0=off, typical: 5-10)")
+    parser.add_argument("--bias-rounds", type=int, default=0,
+                        help="Use biased sampling for first N rounds, then switch to true probs (0=all rounds)")
     return parser.parse_args()
 
 
@@ -135,7 +138,10 @@ def main():
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
     if disc_probs is not None:
-        print(f"  Discovery:   biased sampling (factor={args.bias_factor})")
+        if args.bias_rounds > 0:
+            print(f"  Discovery:   biased sampling (factor={args.bias_factor}, first {args.bias_rounds} rounds)")
+        else:
+            print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
@@ -150,6 +156,7 @@ def main():
         n_sample=1_000_000,
         sample_batch_size=100_000,
         discovery_probs=disc_probs,
+        bias_rounds=args.bias_rounds,
         devices=multi_devices,
         output_dir=output_dir,
     )
