@@ -12,6 +12,7 @@ Usage:
     python run_case118_bus.py
     python run_case118_bus.py --unk-prob-thres 1e-4
     python run_case118_bus.py --devices cuda:0,cuda:1
+    python run_case118_bus.py --bias-factor 5  # biased sampling for faster rule discovery
 """
 
 import sys
@@ -41,6 +42,8 @@ def parse_args():
                         help="Convergence threshold for unknown probability (default: 1e-5)")
     parser.add_argument("--devices", type=str, default="",
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
+    parser.add_argument("--bias-factor", type=float, default=0.0,
+                        help="Bias factor for discovery sampling (0=off, typical: 5-10)")
     return parser.parse_args()
 
 
@@ -93,6 +96,12 @@ def main():
                                 device=device)
     print(f"  Device:      {device}")
 
+    # Build biased discovery probs if requested
+    disc_probs = None
+    if args.bias_factor > 0:
+        disc_probs = tsum.make_discovery_probs(probs_tensor, bias_factor=args.bias_factor)
+        print(f"  Bias factor: {args.bias_factor} (biased sampling for rule discovery)")
+
     # ---------------------------------------------------------------
     # 3. Build system function
     # ---------------------------------------------------------------
@@ -125,6 +134,8 @@ def main():
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
+    if disc_probs is not None:
+        print(f"  Discovery:   biased sampling (factor={args.bias_factor})")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
@@ -138,6 +149,7 @@ def main():
         unk_prob_opt='abs',
         n_sample=1_000_000,
         sample_batch_size=100_000,
+        discovery_probs=disc_probs,
         devices=multi_devices,
         output_dir=output_dir,
     )

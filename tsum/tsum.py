@@ -1220,6 +1220,52 @@ def sample_categorical(probs, n_sample):
 
     return samples
 
+
+def make_discovery_probs(
+    probs: torch.Tensor,
+    bias_factor: float = 5.0,
+) -> torch.Tensor:
+    """Create biased probability tensor for accelerated rule discovery.
+
+    Shifts probability mass toward lower (degraded) states to increase the
+    chance of sampling configurations in the failure/unknown regions.
+
+    For each component, raises the failure-state probabilities by `bias_factor`
+    relative to the best state, then re-normalises.  This preserves zero entries
+    (padding) and keeps the tensor on the same device.
+
+    Args:
+        probs: (n_var, n_state) original probability tensor.
+        bias_factor: multiplicative boost applied to non-best states.
+            Higher values push more samples into degraded configurations.
+            Typical range: 2–20.  A value of 1.0 returns the original probs.
+
+    Returns:
+        discovery_probs: (n_var, n_state) biased probability tensor.
+    """
+    if bias_factor <= 1.0:
+        return probs.clone()
+
+    dp = probs.clone()
+    n_var, n_state = dp.shape
+
+    for i in range(n_var):
+        row = dp[i]
+        # Find the best (highest-index) non-zero state
+        nonzero_mask = row > 0
+        if nonzero_mask.sum() <= 1:
+            continue  # single-state component, nothing to bias
+        best_idx = nonzero_mask.nonzero(as_tuple=True)[0][-1].item()
+        # Boost all states except the best
+        for s in range(n_state):
+            if s != best_idx and row[s] > 0:
+                dp[i, s] = row[s] * bias_factor
+        # Re-normalise
+        dp[i] = dp[i] / dp[i].sum()
+
+    return dp
+
+
 def mask_from_first_one(
     x: torch.Tensor,
     mode: str = "after"
@@ -1964,6 +2010,8 @@ def run_rule_extraction_by_mcs(
     max_search_loops: int = 0,  # max batches per round for searching unknowns (0 = use n_sample // sample_batch_size)
     min_rule_search: bool = True,
     rule_update_verbose: bool = True,
+    # Biased sampling for rule discovery
+    discovery_probs: Optional[torch.Tensor] = None,  # biased probs for search phase; true probs used for estimation
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2041,15 +2089,25 @@ def run_rule_extraction_by_mcs(
         _pool = _ctx.Pool(n_workers)
         print(f"Parallel mode: {n_workers} CPU workers for sfun + minimization")
 
+    # ---- biased search probs ----
+    search_probs = discovery_probs if discovery_probs is not None else probs
+    if discovery_probs is not None:
+        assert discovery_probs.shape == probs.shape, (
+            f"discovery_probs shape {discovery_probs.shape} != probs shape {probs.shape}")
+        search_probs = discovery_probs.to(device)
+        print(f"Biased sampling: using discovery_probs for search phase")
+
     # ---- multi-GPU setup ----
     _use_multi_gpu = False
     _gpu_devices = []
-    _gpu_probs = []       # probs replicated to each device
+    _gpu_probs = []       # probs replicated to each device (for estimation)
+    _gpu_search_probs = []  # search probs replicated to each device
     _gpu_thread_pool = None
     if devices is not None and len(devices) > 1:
         from concurrent.futures import ThreadPoolExecutor
         _gpu_devices = [torch.device(d) for d in devices]
         _gpu_probs = [probs.to(d) for d in _gpu_devices]
+        _gpu_search_probs = [search_probs.to(d) for d in _gpu_devices]
         _gpu_thread_pool = ThreadPoolExecutor(max_workers=len(_gpu_devices))
         _use_multi_gpu = True
         print(f"Multi-GPU mode: sampling across {devices}")
@@ -2092,7 +2150,7 @@ def run_rule_extraction_by_mcs(
                     n_gi = per_gpu + (1 if gi < remainder else 0)
                     rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
                     rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
-                    tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, True))
+                    tasks.append((_gpu_search_probs[gi], n_gi, rules_s_gi, rules_f_gi, True))
 
                 futures = list(_gpu_thread_pool.map(_sample_and_classify_on_device, tasks))
 
@@ -2108,7 +2166,7 @@ def run_rule_extraction_by_mcs(
                 # Re-classify merged batch on primary device for correct indices
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
             else:
-                samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
+                samples = sample_categorical(search_probs, sample_batch_size)  # (B, n_var, n_state)
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
 
                 counts["survival"] += int(res["survival"])
@@ -2123,16 +2181,20 @@ def run_rule_extraction_by_mcs(
 
         # denominator = number of samples actually processed
         n_sample_actual = sample_batch_size * (i + 1)
-        samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
-        unk_prob = samp_probs["unknown"]
-        last_probs.update(samp_probs)
+        # When using biased search probs, the counts don't reflect true probabilities.
+        # Use last_probs from previous estimation; only update from true-probs estimation.
+        if discovery_probs is None:
+            samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
+            unk_prob = samp_probs["unknown"]
+            last_probs.update(samp_probs)
 
         # If no unknowns found, skip candidate creation and continue to periodic update / exit
         if not is_new_cand:
             probs_updated = False
             # When search is capped, the unk_prob estimate from search_loops is rough;
             # force a full probability update to get an accurate termination check.
-            needs_full_estimate = (search_loops < total_loops) or (n_round % prob_update_every) == 0
+            # Also force when using biased discovery_probs (search counts don't reflect true probs).
+            needs_full_estimate = (discovery_probs is not None) or (search_loops < total_loops) or (n_round % prob_update_every) == 0
             if needs_full_estimate:
                 # refresh with a full estimate
                 loops = max(n_sample // sample_batch_size, 1)
