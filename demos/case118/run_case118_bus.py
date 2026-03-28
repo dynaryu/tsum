@@ -14,6 +14,8 @@ Usage:
     python run_case118_bus.py --devices cuda:0,cuda:1
     python run_case118_bus.py --bias-factor 10  # biased sampling for all rounds
     python run_case118_bus.py --bias-factor 10 --bias-rounds 200  # biased for 200 rounds, then true probs
+    python run_case118_bus.py --adaptive-bias alternating --output-dir results_alt
+    python run_case118_bus.py --adaptive-bias gradient --adaptive-hi 10 --adaptive-lo 2 --output-dir results_grad
 """
 
 import sys
@@ -47,6 +49,16 @@ def parse_args():
                         help="Bias factor for discovery sampling (0=off, typical: 5-10)")
     parser.add_argument("--bias-rounds", type=int, default=0,
                         help="Use biased sampling for first N rounds, then switch to true probs (0=all rounds)")
+    parser.add_argument("--adaptive-bias", type=str, default="",
+                        help="Adaptive bias mode: 'alternating' or 'gradient' (default: off)")
+    parser.add_argument("--adaptive-phase-len", type=int, default=100,
+                        help="Rounds per phase (alternating) or evaluation window (gradient)")
+    parser.add_argument("--adaptive-hi", type=float, default=10.0,
+                        help="High bias factor for adaptive modes")
+    parser.add_argument("--adaptive-lo", type=float, default=2.0,
+                        help="Low bias factor for adaptive modes")
+    parser.add_argument("--output-dir", type=str, default="",
+                        help="Output directory (default: tsum_results_bus)")
     return parser.parse_args()
 
 
@@ -131,7 +143,7 @@ def main():
     # ---------------------------------------------------------------
     # 4. Run TSUM rule extraction
     # ---------------------------------------------------------------
-    output_dir = HERE / "tsum_results_bus"
+    output_dir = Path(args.output_dir) if args.output_dir else HERE / "tsum_results_bus"
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     1,000,000 per round (batch 100,000)")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
@@ -142,6 +154,8 @@ def main():
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, first {args.bias_rounds} rounds)")
         else:
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
+    if args.adaptive_bias:
+        print(f"  Adaptive:    {args.adaptive_bias} (hi={args.adaptive_hi}, lo={args.adaptive_lo}, phase={args.adaptive_phase_len})")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
@@ -157,6 +171,10 @@ def main():
         sample_batch_size=100_000,
         discovery_probs=disc_probs,
         bias_rounds=args.bias_rounds,
+        adaptive_bias=args.adaptive_bias,
+        adaptive_bias_phase_len=args.adaptive_phase_len,
+        adaptive_bias_hi=args.adaptive_hi,
+        adaptive_bias_lo=args.adaptive_lo,
         devices=multi_devices,
         output_dir=output_dir,
     )

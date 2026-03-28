@@ -2013,6 +2013,10 @@ def run_rule_extraction_by_mcs(
     # Biased sampling for rule discovery
     discovery_probs: Optional[torch.Tensor] = None,  # biased probs for search phase; true probs used for estimation
     bias_rounds: int = 0,  # use discovery_probs for first N rounds, then switch to true probs (0 = biased for all rounds)
+    adaptive_bias: str = "",  # "alternating" or "gradient" or "" (off)
+    adaptive_bias_phase_len: int = 100,  # rounds per phase for alternating; evaluation window for gradient
+    adaptive_bias_hi: float = 10.0,  # high bias factor for alternating / max factor for gradient
+    adaptive_bias_lo: float = 2.0,  # low bias factor for alternating / min factor for gradient
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2102,6 +2106,41 @@ def run_rule_extraction_by_mcs(
         else:
             print(f"Biased sampling: using discovery_probs for all rounds")
 
+    # ---- adaptive bias state ----
+    _adaptive_mode = adaptive_bias.lower().strip() if adaptive_bias else ""
+    _adaptive_current_factor = 0.0
+    _adaptive_phase_is_hi = True  # for alternating: start with high bias
+    _adaptive_prev_unk = 1.0  # for gradient: track p_unk at last evaluation
+    _adaptive_prev_round = 0  # for gradient: round at last evaluation
+    _adaptive_last_delta_rate = 0.0  # for gradient: last Δp_unk/Δround rate
+    if _adaptive_mode:
+        if discovery_probs is None:
+            # Auto-create initial discovery_probs from the hi factor
+            _adaptive_current_factor = adaptive_bias_hi
+            discovery_probs = make_discovery_probs(probs, bias_factor=adaptive_bias_hi)
+            search_probs = discovery_probs.to(device)
+            _using_biased = True
+        else:
+            _adaptive_current_factor = adaptive_bias_hi
+        if _adaptive_mode == "alternating":
+            print(f"Adaptive bias (alternating): hi={adaptive_bias_hi}, lo={adaptive_bias_lo}, "
+                  f"phase={adaptive_bias_phase_len} rounds")
+        elif _adaptive_mode == "gradient":
+            print(f"Adaptive bias (gradient): range=[{adaptive_bias_lo}, {adaptive_bias_hi}], "
+                  f"window={adaptive_bias_phase_len} rounds")
+        else:
+            print(f"WARNING: unknown adaptive_bias mode '{_adaptive_mode}', ignoring")
+            _adaptive_mode = ""
+
+    def _update_search_probs(new_factor):
+        """Recompute search_probs with a new bias factor and update GPU copies."""
+        nonlocal search_probs, _gpu_search_probs, _adaptive_current_factor
+        _adaptive_current_factor = new_factor
+        new_dp = make_discovery_probs(probs, bias_factor=new_factor)
+        search_probs = new_dp.to(device)
+        if _use_multi_gpu:
+            _gpu_search_probs = [search_probs.to(d) for d in _gpu_devices]
+
     # ---- multi-GPU setup ----
     _use_multi_gpu = False
     _gpu_devices = []
@@ -2133,6 +2172,55 @@ def run_rule_extraction_by_mcs(
                 _gpu_search_probs = [probs.to(d) for d in _gpu_devices]
             _using_biased = False
             print(f"*** Switching from biased to true probs at round {n_round} ***")
+
+        # ---- adaptive bias adjustment ----
+        if _adaptive_mode == "alternating" and _using_biased and n_round > 1:
+            phase_round = (n_round - 1) % (2 * adaptive_bias_phase_len)
+            should_be_hi = phase_round < adaptive_bias_phase_len
+            if should_be_hi != _adaptive_phase_is_hi:
+                new_factor = adaptive_bias_hi if should_be_hi else adaptive_bias_lo
+                _update_search_probs(new_factor)
+                _adaptive_phase_is_hi = should_be_hi
+                print(f"*** Adaptive bias: switching to factor={new_factor:.1f} at round {n_round} ***")
+
+        elif _adaptive_mode == "gradient" and _using_biased and n_round > 1:
+            if (n_round - 1) % adaptive_bias_phase_len == 0 and n_round > adaptive_bias_phase_len:
+                current_unk = last_probs.get("unknown", 1.0)
+                delta_unk = _adaptive_prev_unk - current_unk  # positive = improving
+                delta_rounds = n_round - _adaptive_prev_round
+                rate = delta_unk / max(delta_rounds, 1)
+
+                # Compare with previous rate to decide direction
+                if _adaptive_last_delta_rate > 0 and rate < _adaptive_last_delta_rate:
+                    # Got worse — reverse direction
+                    if _adaptive_current_factor >= adaptive_bias_hi:
+                        new_factor = max(adaptive_bias_lo, _adaptive_current_factor / 1.5)
+                    elif _adaptive_current_factor <= adaptive_bias_lo:
+                        new_factor = min(adaptive_bias_hi, _adaptive_current_factor * 1.5)
+                    else:
+                        # Was going up and it got worse, go down, or vice versa
+                        new_factor = max(adaptive_bias_lo, _adaptive_current_factor / 1.5)
+                else:
+                    # Same or better — continue in same direction (slight push)
+                    if rate > _adaptive_last_delta_rate:
+                        # Keep current factor, it's working
+                        new_factor = _adaptive_current_factor
+                    else:
+                        # Try a small change — alternate push direction
+                        if _adaptive_current_factor > (adaptive_bias_hi + adaptive_bias_lo) / 2:
+                            new_factor = max(adaptive_bias_lo, _adaptive_current_factor / 1.2)
+                        else:
+                            new_factor = min(adaptive_bias_hi, _adaptive_current_factor * 1.2)
+
+                new_factor = max(adaptive_bias_lo, min(adaptive_bias_hi, new_factor))
+                if abs(new_factor - _adaptive_current_factor) > 0.1:
+                    _update_search_probs(new_factor)
+                    print(f"*** Adaptive bias (gradient): factor {_adaptive_current_factor:.1f} -> {new_factor:.1f}, "
+                          f"Δp_unk/round={rate:.2e} (prev={_adaptive_last_delta_rate:.2e}) ***")
+
+                _adaptive_last_delta_rate = rate
+                _adaptive_prev_unk = current_unk
+                _adaptive_prev_round = n_round
 
         print("---")
         print(f"Round: {n_round}, Unk. prob.: {unk_prob:.3e}")
@@ -2259,6 +2347,7 @@ def run_rule_extraction_by_mcs(
                 "avg_len_surv": _avg_rule_len(rules_surv),
                 "avg_len_fail": _avg_rule_len(rules_fail),
                 "rss_gb": rss_gb,
+                **({"bias_factor": _adaptive_current_factor} if _adaptive_mode else {}),
             })
 
             if (n_round % save_every) == 0:
