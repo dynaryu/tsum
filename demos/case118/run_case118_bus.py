@@ -17,6 +17,7 @@ Usage:
     python run_case118_bus.py --adaptive-bias alternating --output-dir results_alt
     python run_case118_bus.py --adaptive-bias gradient --adaptive-hi 10 --adaptive-lo 2 --output-dir results_grad
     python run_case118_bus.py --bias-factor 10 --n-workers 16 --output-dir results_cpu  # CPU-only, 16 parallel workers
+    python run_case118_bus.py --walk-every 5 --walk-count 4 --n-workers 16 --output-dir results_walk  # boundary walking
 """
 
 import sys
@@ -58,6 +59,10 @@ def parse_args():
                         help="High bias factor for adaptive modes")
     parser.add_argument("--adaptive-lo", type=float, default=2.0,
                         help="Low bias factor for adaptive modes")
+    parser.add_argument("--walk-every", type=int, default=0,
+                        help="Do boundary walks every N rounds (0=off, e.g. 5=walk on rounds 5,10,15,...)")
+    parser.add_argument("--walk-count", type=int, default=1,
+                        help="Number of boundary walks per walk round (default: 1)")
     parser.add_argument("--n-workers", type=int, default=1,
                         help="CPU workers for parallel sfun minimization (default: 1)")
     parser.add_argument("--output-dir", type=str, default="",
@@ -159,6 +164,8 @@ def main():
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
     if args.adaptive_bias:
         print(f"  Adaptive:    {args.adaptive_bias} (hi={args.adaptive_hi}, lo={args.adaptive_lo}, phase={args.adaptive_phase_len})")
+    if args.walk_every > 0:
+        print(f"  Walk:        every {args.walk_every} rounds, {args.walk_count} walks per round")
     if args.n_workers > 1:
         print(f"  Workers:     {args.n_workers} (parallel sfun minimization)")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -180,6 +187,8 @@ def main():
         adaptive_bias_phase_len=args.adaptive_phase_len,
         adaptive_bias_hi=args.adaptive_hi,
         adaptive_bias_lo=args.adaptive_lo,
+        walk_every=args.walk_every,
+        walk_count=args.walk_count,
         n_workers=args.n_workers,
         devices=multi_devices,
         output_dir=output_dir,

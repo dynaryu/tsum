@@ -50,6 +50,10 @@ def parse_args():
                         help="Bias factor for discovery sampling (0=off, typical: 5-10)")
     parser.add_argument("--bias-rounds", type=int, default=0,
                         help="Use biased sampling for first N rounds, then switch to true probs (0=all rounds)")
+    parser.add_argument("--walk-every", type=int, default=0,
+                        help="Do boundary walks every N rounds (0=off, e.g. 5=walk on rounds 5,10,15,...)")
+    parser.add_argument("--walk-count", type=int, default=1,
+                        help="Number of boundary walks per walk round (default: 1)")
     parser.add_argument("--n-workers", type=int, default=1,
                         help="CPU workers for parallel sfun minimization (default: 1)")
     parser.add_argument("--output-dir", type=str, default="",
@@ -149,6 +153,8 @@ def main():
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, first {args.bias_rounds} rounds)")
         else:
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
+    if args.walk_every > 0:
+        print(f"  Walk:        every {args.walk_every} rounds, {args.walk_count} walks per round")
     if args.n_workers > 1:
         print(f"  Workers:     {args.n_workers} (parallel sfun minimization)")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -166,6 +172,8 @@ def main():
         sample_batch_size=100_000,
         discovery_probs=disc_probs,
         bias_rounds=args.bias_rounds,
+        walk_every=args.walk_every,
+        walk_count=args.walk_count,
         n_workers=args.n_workers,
         devices=multi_devices,
         output_dir=output_dir,

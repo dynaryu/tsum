@@ -1221,6 +1221,144 @@ def sample_categorical(probs, n_sample):
     return samples
 
 
+def boundary_walk(
+    sfun: Callable,
+    row_names: List[str],
+    n_state: int,
+    sys_surv_st: int,
+    probs: torch.Tensor,
+    rules_mat_surv: torch.Tensor,
+    rules_mat_fail: torch.Tensor,
+    n_walks: int = 1,
+    seed: Optional[int] = None,
+) -> List[Dict[str, int]]:
+    """Generate boundary samples by degrading from all-operational until failure.
+
+    Starting from the all-operational state, randomly degrade components one at
+    a time (weighted by failure probability). When the system transitions from
+    survival to failure, back off one step to get a "barely surviving" sample.
+    Then flip the last degraded component again to get a "barely failing" sample.
+
+    Both samples are checked against existing rules to ensure they are unknown.
+
+    Args:
+        sfun: system function (comps_st -> (fval, sys_st, info))
+        row_names: component names
+        n_state: max number of states per component
+        sys_surv_st: system survival threshold
+        probs: (n_var, n_state) probability tensor (used for degradation weights)
+        rules_mat_surv: existing survival rule tensor
+        rules_mat_fail: existing failure rule tensor
+        n_walks: number of boundary walks to perform
+        seed: random seed
+
+    Returns:
+        List of (comps_st_dict, fval, sys_st) tuples for unknown boundary samples.
+    """
+    rng = random.Random(seed)
+    n_vars = len(row_names)
+    device = probs.device
+
+    # Build max-state (all-operational) configuration
+    max_states = {}
+    for i, name in enumerate(row_names):
+        row = probs[i]
+        nonzero = (row > 0).nonzero(as_tuple=True)[0]
+        max_states[name] = int(nonzero[-1].item()) if len(nonzero) > 0 else 0
+
+    # Build degradation weights: higher failure prob = more likely to be degraded first
+    # Weight = 1 - P(best state), so components likely to fail get degraded first
+    degrade_weights = []
+    for i in range(n_vars):
+        row = probs[i]
+        nonzero = (row > 0).nonzero(as_tuple=True)[0]
+        if len(nonzero) <= 1:
+            degrade_weights.append(0.0)  # can't degrade single-state components
+        else:
+            best_p = float(row[nonzero[-1]])
+            degrade_weights.append(1.0 - best_p)
+
+    results = []
+
+    for _ in range(n_walks):
+        state = dict(max_states)
+        # Components that can still be degraded
+        degradable = [i for i in range(n_vars)
+                      if degrade_weights[i] > 0 and state[row_names[i]] > 0]
+
+        if not degradable:
+            continue
+
+        last_good_state = dict(state)
+        last_degraded_comp = None
+        n_sfun_calls = 0
+
+        while degradable:
+            # Weighted random selection
+            weights = [degrade_weights[i] for i in degradable]
+            total_w = sum(weights)
+            r = rng.random() * total_w
+            cumsum = 0.0
+            chosen_idx = degradable[0]
+            for idx in degradable:
+                cumsum += degrade_weights[idx]
+                if cumsum >= r:
+                    chosen_idx = idx
+                    break
+
+            comp_name = row_names[chosen_idx]
+            prev_val = state[comp_name]
+            state[comp_name] = prev_val - 1
+
+            fval, sys_st, _ = sfun(state)
+            n_sfun_calls += 1
+
+            if sys_st < sys_surv_st:
+                # System just failed — we found the boundary
+                # "barely failing" sample: current state
+                fail_state = dict(state)
+                # "barely surviving" sample: revert last degradation
+                state[comp_name] = prev_val
+                surv_state = dict(state)
+
+                # Check both against existing rules
+                for candidate_state, candidate_sys_st in [(surv_state, sys_surv_st), (fail_state, sys_surv_st - 1)]:
+                    # Convert to one-hot tensor for classification
+                    sample_t = torch.zeros(1, n_vars, n_state, device=device)
+                    for ci, name in enumerate(row_names):
+                        s = candidate_state[name]
+                        if s < n_state:
+                            sample_t[0, ci, s] = 1.0
+
+                    res = classify_samples(sample_t, rules_mat_surv, rules_mat_fail)
+                    if res["unknown"] > 0:
+                        results.append((candidate_state, fval, candidate_sys_st))
+
+                break
+            else:
+                # Still surviving — record and continue degrading
+                last_good_state = dict(state)
+                last_degraded_comp = comp_name
+
+                if state[comp_name] <= 0:
+                    degradable.remove(chosen_idx)
+
+        # If we exhausted all degradable components without failure,
+        # the last state is a deep-survival sample (still useful if unknown)
+        else:
+            sample_t = torch.zeros(1, n_vars, n_state, device=device)
+            for ci, name in enumerate(row_names):
+                s = state[name]
+                if s < n_state:
+                    sample_t[0, ci, s] = 1.0
+            res = classify_samples(sample_t, rules_mat_surv, rules_mat_fail)
+            if res["unknown"] > 0:
+                fval, sys_st, _ = sfun(state)
+                results.append((state, fval, sys_st))
+
+    return results
+
+
 def make_discovery_probs(
     probs: torch.Tensor,
     bias_factor: float = 5.0,
@@ -2017,6 +2155,9 @@ def run_rule_extraction_by_mcs(
     adaptive_bias_phase_len: int = 100,  # rounds per phase for alternating; evaluation window for gradient
     adaptive_bias_hi: float = 10.0,  # high bias factor for alternating / max factor for gradient
     adaptive_bias_lo: float = 2.0,  # low bias factor for alternating / min factor for gradient
+    # Boundary walking
+    walk_every: int = 0,  # do boundary walks every N rounds (0 = off); e.g. 5 = walk on rounds 5,10,15,...
+    walk_count: int = 1,  # number of walks per boundary-walk round
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2238,7 +2379,158 @@ def run_rule_extraction_by_mcs(
         _t_minimize = 0.0
         _t_rules = 0.0
         _t_probs = 0.0
+        _walk_used = False
 
+        # ---- boundary walk round ----
+        if walk_every > 0 and n_round % walk_every == 0:
+            _ts = time.perf_counter()
+            walk_results = boundary_walk(
+                sfun=sfun,
+                row_names=row_names,
+                n_state=n_state,
+                sys_surv_st=sys_surv_st,
+                probs=probs,
+                rules_mat_surv=rules_mat_surv,
+                rules_mat_fail=rules_mat_fail,
+                n_walks=max(walk_count, n_workers) if _pool else walk_count,
+            )
+            _t_search = time.perf_counter() - _ts
+
+            if walk_results:
+                _walk_used = True
+                is_new_cand = True
+                print(f"Boundary walk: {len(walk_results)} unknown sample(s) found")
+
+                _ts = time.perf_counter()
+                new_surv_dicts = []
+                new_fail_dicts = []
+
+                if _pool:
+                    # Parallel minimization of walk results
+                    tasks = []
+                    for comps_st, fval_w, sys_st_w in walk_results:
+                        tasks.append((comps_st, fval_w))
+                    min_results = _pool.map(_minimize_one_unknown, tasks)
+
+                    for min_comps_st, sys_st_m, fval_m in min_results:
+                        if sys_st_m >= sys_surv_st:
+                            new_surv_dicts.append(min_comps_st)
+                        else:
+                            new_fail_dicts.append(min_comps_st)
+                        if isinstance(fval_m, float):
+                            fval_m = int(round(fval_m * 1000)) / 1000.0
+                        if fval_m not in sys_val_list:
+                            sys_val_list.append(fval_m)
+                            sys_val_list.sort(key=mixed_sort_key)
+                else:
+                    # Serial minimization
+                    for comps_st, fval_w, sys_st_w in walk_results:
+                        if sys_st_w >= sys_surv_st:
+                            min_comps_st, info = minimise_surv_states_random(
+                                comps_st, sfun, sys_surv_st=sys_surv_st, fval=fval_w)
+                            fval_w = info.get('final_sys_state', fval_w)
+                            new_surv_dicts.append(min_comps_st)
+                        else:
+                            min_comps_st, info = minimise_fail_states_random(
+                                comps_st, sfun, max_state=n_state - 1,
+                                sys_fail_st=sys_surv_st - 1, fval=fval_w)
+                            fval_w = info.get('final_sys_state', fval_w)
+                            new_fail_dicts.append(min_comps_st)
+                        if isinstance(fval_w, float):
+                            fval_w = int(round(fval_w * 1000)) / 1000.0
+                        if fval_w not in sys_val_list:
+                            sys_val_list.append(fval_w)
+                            sys_val_list.sort(key=mixed_sort_key)
+
+                _t_minimize = time.perf_counter() - _ts
+                _ts = time.perf_counter()
+
+                if new_surv_dicts:
+                    rules_surv, rules_mat_surv, n_add, n_rem = update_rules_batch(
+                        new_surv_dicts, rules_surv, rules_mat_surv, row_names, verbose=rule_update_verbose)
+                    print(f"Walk survival: {n_add} rules added, {n_rem} removed (from {len(new_surv_dicts)} candidates)")
+                if new_fail_dicts:
+                    rules_fail, rules_mat_fail, n_add, n_rem = update_rules_batch(
+                        new_fail_dicts, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
+                    print(f"Walk failure: {n_add} rules added, {n_rem} removed (from {len(new_fail_dicts)} candidates)")
+
+                if sys_val_list:
+                    sys_val_list.sort(key=mixed_sort_key)
+                _t_rules = time.perf_counter() - _ts
+
+                # ---- metrics and save for walk round ----
+                n_sample_actual = 0
+                probs_updated = False
+                _t_probs = 0.0
+                if (n_round % prob_update_every) == 0:
+                    _ts_p = time.perf_counter()
+                    loops = max(n_sample // sample_batch_size, 1)
+                    c2 = {"survival": 0, "failure": 0, "unknown": 0}
+                    for _ in range(loops):
+                        if _use_multi_gpu:
+                            n_gpus = len(_gpu_devices)
+                            per_gpu = sample_batch_size // n_gpus
+                            remainder = sample_batch_size % n_gpus
+                            tasks = []
+                            for gi in range(n_gpus):
+                                n_gi = per_gpu + (1 if gi < remainder else 0)
+                                rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
+                                rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
+                                tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, False))
+                            for _, ci in _gpu_thread_pool.map(_sample_and_classify_on_device, tasks):
+                                for k in c2:
+                                    c2[k] += ci[k]
+                        else:
+                            s = sample_categorical(probs, sample_batch_size)
+                            ci = classify_samples(s, rules_mat_surv, rules_mat_fail)
+                            for k in c2:
+                                c2[k] += ci[k]
+                    sp2 = {k: v / (sample_batch_size * loops) for k, v in c2.items()}
+                    print(f"Probs: 'surv': {sp2['survival']: .3e}, 'fail': {sp2['failure']: .3e}, 'unkn': {sp2['unknown']: .3e}")
+                    unk_prob = sp2["unknown"]
+                    last_probs.update(sp2)
+                    n_sample_actual = sample_batch_size * loops
+                    probs_updated = True
+                    _t_probs = time.perf_counter() - _ts_p
+
+                dt = time.perf_counter() - t0
+                rss_gb = psutil.Process().memory_info().rss / (1024**3)
+                metrics_log.append({
+                    "round": n_round,
+                    "time_sec": dt,
+                    "t_search": round(_t_search, 3),
+                    "t_minimize": round(_t_minimize, 3),
+                    "t_rules": round(_t_rules, 3),
+                    "t_probs": round(_t_probs, 3),
+                    "n_rules_surv": int(len(rules_mat_surv)),
+                    "n_rules_fail": int(len(rules_mat_fail)),
+                    "probs_updated": probs_updated,
+                    "p_survival": last_probs["survival"],
+                    "p_failure": last_probs["failure"],
+                    "p_unknown": last_probs["unknown"],
+                    "n_sample_actual": n_sample_actual,
+                    "avg_len_surv": _avg_rule_len(rules_surv),
+                    "avg_len_fail": _avg_rule_len(rules_fail),
+                    "rss_gb": rss_gb,
+                    "walk_round": True,
+                    **({"bias_factor": _adaptive_current_factor} if _adaptive_mode else {}),
+                })
+
+                if (n_round % save_every) == 0:
+                    with open(metrics_path, "a", encoding="utf-8") as mf:
+                        for e in metrics_log[-save_every:]:
+                            mf.write(json.dumps(e) + "\n")
+                    _save_json(rules_surv, rules_surv_path)
+                    _save_json(rules_fail, rules_fail_path)
+                    _save_pt(rules_mat_surv, rules_surv_pt_path)
+                    _save_pt(rules_mat_fail, rules_fail_pt_path)
+
+                if n_round >= max_rounds:
+                    print(f"Reached maximum rounds ({max_rounds}). Terminating.")
+                    break
+                continue  # skip normal search for this round
+
+        # ---- normal sampling search ----
         _ts = time.perf_counter()
         for i in range(search_loops):
             if _use_multi_gpu:
