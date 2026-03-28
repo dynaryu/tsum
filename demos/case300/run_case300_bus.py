@@ -16,6 +16,7 @@ Usage:
     python run_case300_bus.py --bias-factor 5 --bias-rounds 500  # biased for 500 rounds, then true probs
     python run_case300_bus.py --bias-factor 5 --output-dir results_bf5
     python run_case300_bus.py --bias-factor 10 --output-dir results_bf10
+    python run_case300_bus.py --bias-factor 5 --n-workers 16 --output-dir results_cpu  # CPU-only, 16 parallel workers
 """
 
 import sys
@@ -49,6 +50,8 @@ def parse_args():
                         help="Bias factor for discovery sampling (0=off, typical: 5-10)")
     parser.add_argument("--bias-rounds", type=int, default=0,
                         help="Use biased sampling for first N rounds, then switch to true probs (0=all rounds)")
+    parser.add_argument("--n-workers", type=int, default=1,
+                        help="CPU workers for parallel sfun minimization (default: 1)")
     parser.add_argument("--output-dir", type=str, default="",
                         help="Output directory (default: tsum_results_bus)")
     return parser.parse_args()
@@ -146,6 +149,8 @@ def main():
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, first {args.bias_rounds} rounds)")
         else:
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
+    if args.n_workers > 1:
+        print(f"  Workers:     {args.n_workers} (parallel sfun minimization)")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
@@ -161,6 +166,7 @@ def main():
         sample_batch_size=100_000,
         discovery_probs=disc_probs,
         bias_rounds=args.bias_rounds,
+        n_workers=args.n_workers,
         devices=multi_devices,
         output_dir=output_dir,
     )

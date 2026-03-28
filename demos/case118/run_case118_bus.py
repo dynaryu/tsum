@@ -16,6 +16,7 @@ Usage:
     python run_case118_bus.py --bias-factor 10 --bias-rounds 200  # biased for 200 rounds, then true probs
     python run_case118_bus.py --adaptive-bias alternating --output-dir results_alt
     python run_case118_bus.py --adaptive-bias gradient --adaptive-hi 10 --adaptive-lo 2 --output-dir results_grad
+    python run_case118_bus.py --bias-factor 10 --n-workers 16 --output-dir results_cpu  # CPU-only, 16 parallel workers
 """
 
 import sys
@@ -57,6 +58,8 @@ def parse_args():
                         help="High bias factor for adaptive modes")
     parser.add_argument("--adaptive-lo", type=float, default=2.0,
                         help="Low bias factor for adaptive modes")
+    parser.add_argument("--n-workers", type=int, default=1,
+                        help="CPU workers for parallel sfun minimization (default: 1)")
     parser.add_argument("--output-dir", type=str, default="",
                         help="Output directory (default: tsum_results_bus)")
     return parser.parse_args()
@@ -156,6 +159,8 @@ def main():
             print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
     if args.adaptive_bias:
         print(f"  Adaptive:    {args.adaptive_bias} (hi={args.adaptive_hi}, lo={args.adaptive_lo}, phase={args.adaptive_phase_len})")
+    if args.n_workers > 1:
+        print(f"  Workers:     {args.n_workers} (parallel sfun minimization)")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
@@ -175,6 +180,7 @@ def main():
         adaptive_bias_phase_len=args.adaptive_phase_len,
         adaptive_bias_hi=args.adaptive_hi,
         adaptive_bias_lo=args.adaptive_lo,
+        n_workers=args.n_workers,
         devices=multi_devices,
         output_dir=output_dir,
     )
