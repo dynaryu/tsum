@@ -1404,6 +1404,210 @@ def make_discovery_probs(
     return dp
 
 
+def fixed_k_search(
+    sfun: Callable,
+    row_names: List[str],
+    n_state: int,
+    sys_surv_st: int,
+    probs: torch.Tensor,
+    k: int = 3,
+    n_samples: int = 100_000,
+    n_workers: int = 1,
+    priority_components: Optional[List[str]] = None,
+    worst_state: bool = True,
+    seed: Optional[int] = None,
+) -> List[Tuple[Dict[str, int], float, int]]:
+    """Search for failure modes by randomly sampling k degraded components.
+
+    Randomly selects k components to degrade from their best state, weighted
+    by their failure probability, while keeping all other components fully
+    operational. For each sample, calls sfun to check if the system fails.
+
+    Args:
+        sfun: system function (comps_st -> (fval, sys_st, info))
+        row_names: component names
+        n_state: max number of states per component
+        sys_surv_st: system survival state threshold
+        probs: (n_var, n_state) probability tensor
+        k: number of components to degrade simultaneously
+        n_samples: number of random k-combinations to test
+        n_workers: number of parallel workers (uses multiprocessing)
+        priority_components: if set, at least one component in each combo
+            must be from this list
+        worst_state: if True, degrade to state 0 (worst); if False, sample
+            degraded state weighted by probability
+        seed: random seed
+
+    Returns:
+        List of (comps_st_dict, fval, sys_st) for each failure found.
+    """
+    rng = random.Random(seed)
+    n_vars = len(row_names)
+
+    # Build max-state (all-operational) configuration
+    max_states = {}
+    degradable_states = {}  # component -> list of degraded states
+    degrade_weights = {}  # component -> weight (1 - p_best)
+    for i, name in enumerate(row_names):
+        row = probs[i]
+        nonzero = (row > 0).nonzero(as_tuple=True)[0]
+        if len(nonzero) > 0:
+            best = int(nonzero[-1].item())
+            max_states[name] = best
+            deg = [int(s.item()) for s in nonzero if int(s.item()) < best]
+            if deg:
+                degradable_states[name] = deg
+                degrade_weights[name] = 1.0 - float(row[best].item())
+        else:
+            max_states[name] = 0
+
+    degradable_names = list(degradable_states.keys())
+    weights = [degrade_weights[n] for n in degradable_names]
+    total_weight = sum(weights)
+
+    mode = "worst-state" if worst_state else "prob-weighted"
+    print(f"Fixed-k search: k={k}, {len(degradable_names)} degradable components, "
+          f"{n_samples} samples, {mode}")
+
+    # Build priority index if specified
+    priority_indices = None
+    if priority_components:
+        priority_set = set(priority_components) & set(degradable_names)
+        priority_indices = [i for i, n in enumerate(degradable_names)
+                            if n in priority_set]
+        pri_weights = [weights[i] for i in priority_indices]
+        print(f"  Priority: {len(priority_indices)} components")
+
+    # Generate random k-combinations weighted by failure probability
+    tasks = []
+    seen = set()
+    attempts = 0
+    max_attempts = n_samples * 10
+
+    while len(tasks) < n_samples and attempts < max_attempts:
+        attempts += 1
+
+        if priority_indices and rng.random() < 0.5:
+            # Force at least one priority component
+            n_pri = rng.randint(1, min(k, len(priority_indices)))
+            pri_chosen = _weighted_sample_without_replacement(
+                rng, priority_indices, pri_weights, n_pri)
+            remaining_indices = [i for i in range(len(degradable_names))
+                                 if i not in set(pri_chosen)]
+            remaining_weights = [weights[i] for i in remaining_indices]
+            n_other = k - n_pri
+            if n_other > len(remaining_indices):
+                continue
+            other_chosen = _weighted_sample_without_replacement(
+                rng, remaining_indices, remaining_weights, n_other)
+            chosen = sorted(pri_chosen + other_chosen)
+        else:
+            chosen = sorted(_weighted_sample_without_replacement(
+                rng, list(range(len(degradable_names))), weights, k))
+
+        key = tuple(chosen)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Build state: all operational except chosen components
+        state = dict(max_states)
+        for idx in chosen:
+            name = degradable_names[idx]
+            deg_states = degradable_states[name]
+            if worst_state:
+                state[name] = min(deg_states)  # state 0 (worst)
+            elif len(deg_states) == 1:
+                state[name] = deg_states[0]
+            else:
+                # Weight by actual probabilities of degraded states
+                deg_probs = [float(probs[row_names.index(name), s].item())
+                             for s in deg_states]
+                state[name] = _weighted_choice(rng, deg_states, deg_probs)
+
+        tasks.append(state)
+
+    print(f"  Generated {len(tasks)} unique combinations "
+          f"({attempts} attempts)")
+
+    # Execute
+    failures = []
+    n_tested = 0
+
+    if n_workers > 1:
+        global _MP_SFUN, _MP_SYS_SURV_ST, _MP_N_STATE
+        _MP_SFUN = sfun
+        _MP_SYS_SURV_ST = sys_surv_st
+        _MP_N_STATE = n_state
+
+        batch_size = max(n_workers * 4, 100)
+        with mp.Pool(n_workers) as pool:
+            for batch_start in range(0, len(tasks), batch_size):
+                batch = tasks[batch_start:batch_start + batch_size]
+                results = pool.map(_eval_sfun_worker, batch)
+                for comps_st, fval, sys_st in results:
+                    n_tested += 1
+                    if sys_st < sys_surv_st:
+                        failures.append((comps_st, fval, sys_st))
+                if n_tested % 10000 == 0 or batch_start + batch_size >= len(tasks):
+                    print(f"  Tested {n_tested}/{len(tasks)}, "
+                          f"failures found: {len(failures)}", flush=True)
+    else:
+        for comps_st in tasks:
+            fval, sys_st, _ = sfun(comps_st)
+            n_tested += 1
+            if sys_st < sys_surv_st:
+                failures.append((comps_st, fval, sys_st))
+            if n_tested % 10000 == 0 or n_tested == len(tasks):
+                print(f"  Tested {n_tested}/{len(tasks)}, "
+                      f"failures found: {len(failures)}", flush=True)
+
+    print(f"Fixed-k search complete: {len(failures)} failures in "
+          f"{n_tested} evaluations")
+    return failures
+
+
+def _weighted_sample_without_replacement(rng, indices, weights, k):
+    """Sample k items from indices without replacement, weighted."""
+    if k >= len(indices):
+        return list(indices)
+    selected = []
+    available = list(indices)
+    avail_weights = list(weights)
+    for _ in range(k):
+        total = sum(avail_weights)
+        r = rng.random() * total
+        cumsum = 0.0
+        for j, (idx, w) in enumerate(zip(available, avail_weights)):
+            cumsum += w
+            if cumsum >= r:
+                selected.append(idx)
+                available.pop(j)
+                avail_weights.pop(j)
+                break
+    return selected
+
+
+def _weighted_choice(rng, items, weights):
+    """Weighted random choice from items."""
+    total = sum(weights)
+    r = rng.random() * total
+    cumsum = 0.0
+    for item, w in zip(items, weights):
+        cumsum += w
+        if cumsum >= r:
+            return item
+    return items[-1]
+
+
+def _eval_sfun_worker(comps_st):
+    """Worker for parallel sfun evaluation in fixed_k_search."""
+    sfun = _MP_SFUN
+    sys_surv_st = _MP_SYS_SURV_ST
+    fval, sys_st, _ = sfun(comps_st)
+    return comps_st, fval, sys_st
+
+
 def mask_from_first_one(
     x: torch.Tensor,
     mode: str = "after"
