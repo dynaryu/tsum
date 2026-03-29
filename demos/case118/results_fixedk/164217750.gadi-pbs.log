@@ -1,0 +1,123 @@
+============================================================
+Fixed-k search (k=[2, 3, 4, 5, 6]) on IEEE 118-bus DC-OPF
+============================================================
+
+  Components:  304 total
+    Generator buses: 54 (4-state)
+    Ordinary buses:  64 (2-state)
+    Branches:        186 (2-state)
+  Max states:  4
+  Threshold:   13.8% blackout (Scenario 1)
+
+Initialising DC-OPF system function...
+DC-OPF sfun ready: 118 buses, 54 generators, 186 branches
+
+============================================================
+Searching k=2
+============================================================
+Fixed-k search: k=2, 304 degradable components, 500000 samples, worst-state
+  Generated 36161 unique combinations (5000000 attempts)
+  Tested 36161/36161, failures found: 0
+Fixed-k search complete: 0 failures in 36161 evaluations
+
+k=2: 0 failures in 105.1s
+Saved to tsum/demos/case118/results_fixedk/failures_k2.json
+
+  No failures found with k=2.
+
+============================================================
+Searching k=3
+============================================================
+Fixed-k search: k=3, 304 degradable components, 500000 samples, worst-state
+  Generated 465601 unique combinations (5000000 attempts)
+  Tested 465601/465601, failures found: 9
+Fixed-k search complete: 9 failures in 465601 evaluations
+
+k=3: 9 failures in 244.0s
+Saved to tsum/demos/case118/results_fixedk/failures_k3.json
+
+  k=3 summary:
+    Failures: 9
+    Conditions: min=3, max=3, avg=3.0
+    Top failures:
+      15.1%: vbus59=0, vbus80=0, vbus89=0
+      14.8%: vbus59=0, vbus80=0, vbus116=0
+      14.7%: vbus59=0, vbus90=0, vbus116=0
+      14.5%: vbus59=0, vbus80=0, vbus92=0
+      14.3%: vbus59=0, vbus80=0, vbus90=0
+
+============================================================
+Searching k=4
+============================================================
+Fixed-k search: k=4, 304 degradable components, 500000 samples, worst-state
+  Generated 500000 unique combinations (793398 attempts)
+  Tested 480000/500000, failures found: 1321
+  Tested 500000/500000, failures found: 1351
+Fixed-k search complete: 1351 failures in 500000 evaluations
+
+k=4: 1351 failures in 146.7s
+Saved to tsum/demos/case118/results_fixedk/failures_k4.json
+
+  k=4 summary:
+    Failures: 1351
+    Conditions: min=4, max=4, avg=4.0
+    Top failures:
+      19.5%: vbus59=0, vbus80=0, vbus89=0, vbus116=0
+      19.4%: vbus59=0, vbus77=0, vbus80=0, vbus89=0
+      18.3%: vbus59=0, vbus80=0, vbus90=0, vbus92=0
+      18.3%: vbus59=0, vbus77=0, vbus80=0, vbus116=0
+      18.2%: vbus49=0, vbus59=0, vbus80=0, vbus89=0
+
+============================================================
+Searching k=5
+============================================================
+Fixed-k search: k=5, 304 degradable components, 500000 samples, worst-state
+  Generated 500000 unique combinations (516265 attempts)
+  Tested 480000/500000, failures found: 8024
+  Tested 500000/500000, failures found: 8345
+Fixed-k search complete: 8345 failures in 500000 evaluations
+
+k=5: 8345 failures in 139.9s
+Saved to tsum/demos/case118/results_fixedk/failures_k5.json
+
+  k=5 summary:
+    Failures: 8345
+    Conditions: min=5, max=5, avg=5.0
+    Top failures:
+      21.6%: vbus59=0, vbus77=0, vbus80=0, vbus89=0, vbus92=0
+      21.5%: vbus59=0, vbus80=0, vbus85=0, vbus92=0, vbus116=0
+      21.2%: vbus49=0, vbus54=0, vbus59=0, vbus80=0, vbus116=0
+      21.0%: vbus49=0, vbus54=0, vbus59=0, vbus90=0, vbus116=0
+      21.0%: vbus40=0, vbus59=0, vbus80=0, vbus89=0, vbus116=0
+
+============================================================
+Searching k=6
+============================================================
+Fixed-k search: k=6, 304 degradable components, 500000 samples, worst-state
+  Generated 500000 unique combinations (501545 attempts)
+  Tested 480000/500000, failures found: 24299
+  Tested 500000/500000, failures found: 25261
+Fixed-k search complete: 25261 failures in 500000 evaluations
+
+k=6: 25261 failures in 142.8s
+Saved to tsum/demos/case118/results_fixedk/failures_k6.json
+
+  k=6 summary:
+    Failures: 25261
+    Conditions: min=6, max=6, avg=6.0
+    Top failures:
+      25.3%: vbus27=0, vbus49=0, vbus59=0, vbus80=0, vbus89=0, vbus116=0
+      24.9%: vbus49=0, vbus59=0, vbus80=0, vbus85=0, vbus89=0, vbus116=0
+      24.9%: vbus27=0, vbus59=0, vbus77=0, vbus80=0, vbus90=0, vbus116=0
+      24.0%: vbus42=0, vbus59=0, vbus77=0, vbus80=0, vbus85=0, vbus89=0
+      23.8%: vbus12=0, vbus27=0, vbus59=0, vbus80=0, vbus89=0, vbus116=0
+
+============================================================
+Overall Summary
+============================================================
+  Total time: 778.5s
+  k=2: 0 failures found
+  k=3: 9 failures found
+  k=4: 1351 failures found
+  k=5: 8345 failures found
+  k=6: 25261 failures found

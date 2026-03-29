@@ -1,0 +1,13 @@
+check your profile
+
+======================================================================================
+                  Resource Usage on 2026-03-30 10:30:23:
+   Job Id:             164217750.gadi-pbs
+   Project:            n74
+   Exit Status:        0
+   Service Units:      22.16
+   NCPUs Requested:    48                  CPU Time Used: 08:27:05        
+   Memory Requested:   190.0GB               Memory Used: 9.85GB          
+   Walltime Requested: 24:00:00            Walltime Used: 00:13:51        
+   JobFS Requested:    12.0GB                 JobFS Used: 0B              
+======================================================================================

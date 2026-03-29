@@ -1,0 +1,83 @@
+[
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus92": 0,
+      "vbus116": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 13.812
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus90": 0,
+      "vbus116": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 14.71
+  },
+  {
+    "degraded": {
+      "vbus49": 0,
+      "vbus59": 0,
+      "vbus116": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 13.99
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus80": 0,
+      "vbus92": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 14.454
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus80": 0,
+      "vbus116": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 14.84
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus80": 0,
+      "vbus90": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 14.345
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus77": 0,
+      "vbus80": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 13.942
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus89": 0,
+      "vbus116": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 14.321
+  },
+  {
+    "degraded": {
+      "vbus59": 0,
+      "vbus80": 0,
+      "vbus89": 0
+    },
+    "n_conditions": 3,
+    "blackout_pct": 15.125
+  }
+]
