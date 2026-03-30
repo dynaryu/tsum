@@ -1,9 +1,9 @@
 """
-Variable reduction for IEEE 118-bus: fix irrelevant components, run TSUM on generators only.
+Variable reduction for IEEE 300-bus: fix irrelevant components, run TSUM on generators only.
 
 The idea: fixed-k search shows that system failures are driven almost entirely
-by generator bus degradation.  All 9 k=3 failure rules involve only 8 generators.
-Binary components (186 branches + 64 ordinary buses) have individual failure
+by generator bus degradation.
+Binary components (411 branches + 231 ordinary buses) have individual failure
 probabilities of ~10^-3 or less; multi-component branch failures contribute
 negligibly to system risk compared to generator degradation.
 
@@ -12,10 +12,10 @@ This script:
   2. Fixes everything else at best (operational) state
   3. Wraps the sfun so fixed components are injected automatically
   4. Optionally seeds with failure rules from fixed-k search
-  5. Runs TSUM on the reduced problem (~54 variables instead of 304)
+  5. Runs TSUM on the reduced problem (~69 variables instead of 711)
 
 Usage:
-    # Generators only (54 variables, 4-state)
+    # Generators only (69 variables, 4-state)
     python run_variable_reduction.py --n-workers 48 --output-dir results_reduced
 
     # With fixed-k seed rules
@@ -53,7 +53,7 @@ from tsum.variable_reduction import (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Variable reduction TSUM for IEEE 118-bus")
+        description="Variable reduction TSUM for IEEE 300-bus")
 
     # Component selection
     parser.add_argument("--mode", type=str, default="multistate",
@@ -90,11 +90,11 @@ def main():
     args = parse_args()
 
     print("=" * 60)
-    print("Variable Reduction TSUM for IEEE 118-bus DC-OPF")
+    print("Variable Reduction TSUM for IEEE 300-bus DC-OPF")
     print("=" * 60)
 
     # Load input data
-    data_dir = HERE / "case118_tsum_bus"
+    data_dir = HERE / "case300_tsum_bus"
     with open(data_dir / "probs.json") as f:
         probs_dict = json.load(f)
 
@@ -112,8 +112,8 @@ def main():
     # Build sfun
     print("\nInitialising DC-OPF system function...")
     base_sfun = make_dcopt_sfun(
-        case_path=str(HERE / "case118.m"),
-        blackout_threshold=13.8,
+        case_path=str(HERE / "case300.m"),
+        blackout_threshold=26.1,
         alpha=2.0,
     )
 
