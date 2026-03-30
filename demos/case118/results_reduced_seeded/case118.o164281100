@@ -1,0 +1,13 @@
+check your profile
+
+======================================================================================
+                  Resource Usage on 2026-03-30 22:35:39:
+   Job Id:             164281100.gadi-pbs
+   Project:            n74
+   Exit Status:        -29 (Job failed due to exceeding walltime)
+   Service Units:      113.60
+   NCPUs Requested:    48                  CPU Time Used: 06:05:13        
+   Memory Requested:   190.0GB               Memory Used: 4.99GB          
+   Walltime Requested: 01:10:00            Walltime Used: 01:11:00        
+   JobFS Requested:    12.0GB                 JobFS Used: 0B              
+======================================================================================
