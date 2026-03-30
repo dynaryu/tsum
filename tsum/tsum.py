@@ -1362,6 +1362,9 @@ def boundary_walk(
 def make_discovery_probs(
     probs: torch.Tensor,
     bias_factor: float = 5.0,
+    row_names: Optional[List[str]] = None,
+    critical_components: Optional[List[str]] = None,
+    critical_bias_factor: Optional[float] = None,
 ) -> torch.Tensor:
     """Create biased probability tensor for accelerated rule discovery.
 
@@ -1372,22 +1375,43 @@ def make_discovery_probs(
     relative to the best state, then re-normalises.  This preserves zero entries
     (padding) and keeps the tensor on the same device.
 
+    If critical_components is provided, those components receive a higher bias
+    (critical_bias_factor, default 10x bias_factor) while the rest receive the
+    base bias_factor. This targets sampling toward known vulnerability clusters.
+
     Args:
         probs: (n_var, n_state) original probability tensor.
         bias_factor: multiplicative boost applied to non-best states.
             Higher values push more samples into degraded configurations.
-            Typical range: 2–20.  A value of 1.0 returns the original probs.
+            Typical range: 2-20.  A value of 1.0 returns the original probs.
+        row_names: component names, required if critical_components is provided.
+        critical_components: list of component names to receive extra bias.
+        critical_bias_factor: bias factor for critical components.
+            Default: 10 * bias_factor.
 
     Returns:
         discovery_probs: (n_var, n_state) biased probability tensor.
     """
-    if bias_factor <= 1.0:
+    if bias_factor <= 1.0 and not critical_components:
         return probs.clone()
 
     dp = probs.clone()
     n_var, n_state = dp.shape
 
+    # Build per-component bias factors
+    if critical_components and row_names:
+        if critical_bias_factor is None:
+            critical_bias_factor = bias_factor * 10
+        critical_set = set(critical_components)
+        factors = [critical_bias_factor if row_names[i] in critical_set
+                   else bias_factor for i in range(n_var)]
+    else:
+        factors = [bias_factor] * n_var
+
     for i in range(n_var):
+        bf = factors[i]
+        if bf <= 1.0:
+            continue
         row = dp[i]
         # Find the best (highest-index) non-zero state
         nonzero_mask = row > 0
@@ -1397,11 +1421,42 @@ def make_discovery_probs(
         # Boost all states except the best
         for s in range(n_state):
             if s != best_idx and row[s] > 0:
-                dp[i, s] = row[s] * bias_factor
+                dp[i, s] = row[s] * bf
         # Re-normalise
         dp[i] = dp[i] / dp[i].sum()
 
     return dp
+
+
+def get_critical_components(
+    rules: List[Dict],
+    min_frequency: float = 0.3,
+) -> List[str]:
+    """Extract critical components from failure rules by frequency.
+
+    Components that appear in a high fraction of failure rules are likely
+    critical vulnerabilities. These can be used with make_discovery_probs()
+    to create targeted biased sampling.
+
+    Args:
+        rules: list of rule dicts (from seed_rules_fail.json or rules_leq_0.json)
+        min_frequency: minimum fraction of rules a component must appear in
+            to be considered critical (default: 0.3 = 30%).
+
+    Returns:
+        List of component names sorted by frequency (most frequent first).
+    """
+    from collections import Counter
+    comp_freq: Counter = Counter()
+    for rule in rules:
+        for k in rule:
+            if k != 'sys':
+                comp_freq[k] += 1
+    n_rules = len(rules)
+    if n_rules == 0:
+        return []
+    return [comp for comp, count in comp_freq.most_common()
+            if count / n_rules >= min_frequency]
 
 
 def fixed_k_search(

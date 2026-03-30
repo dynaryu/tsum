@@ -14,9 +14,9 @@ Usage:
     python run_fixed_k_search.py --k 2 3 4 --n-samples 500000 --n-workers 192 --run-tsum
     python run_fixed_k_search.py --k 3 4 5 --n-samples 500000 --n-workers 192 --run-tsum --bias-factor 10
 
-    # Load pre-computed failures and seed TSUM (skip Phase 1)
-    python run_fixed_k_search.py --load-failures results_fixedk/failures_k3.json results_fixedk/failures_k4.json --run-tsum --n-workers 192 --output-dir results_seeded
-    python run_fixed_k_search.py --load-failures results_fixedk/failures_k3.json --run-tsum --bias-factor 10 --output-dir results_seeded_bf10
+    # Load pre-computed failures from directory and seed TSUM (skip Phase 1)
+    python run_fixed_k_search.py --load-failures results_fixedk --run-tsum --n-workers 192 --output-dir results_seeded
+    python run_fixed_k_search.py --load-failures results_fixedk --run-tsum --bias-factor 10 --output-dir results_seeded_bf10
 """
 
 import sys
@@ -55,8 +55,8 @@ def parse_args():
                         help="Comma-separated priority components")
     parser.add_argument("--no-worst-state", action="store_true",
                         help="Sample degraded states by probability instead of worst state")
-    parser.add_argument("--load-failures", type=str, nargs="+", default=None,
-                        help="Load pre-computed failure JSON files (skip Phase 1)")
+    parser.add_argument("--load-failures", type=str, default=None,
+                        help="Directory containing failures_k*.json files (skip Phase 1)")
     # TSUM parameters
     parser.add_argument("--run-tsum", action="store_true",
                         help="After discovery, seed TSUM and run MCS extraction")
@@ -137,9 +137,14 @@ def main():
         print("Phase 1: Loading pre-computed failures")
         print(f"{'='*60}")
 
-        for fpath in args.load_failures:
+        fail_dir = Path(args.load_failures)
+        fail_files = sorted(fail_dir.glob("failures_k*.json"))
+        if not fail_files:
+            print(f"  No failures_k*.json files found in {fail_dir}")
+            return
+        for fpath in fail_files:
             data = json.load(open(fpath))
-            print(f"  {fpath}: {len(data)} entries")
+            print(f"  {fpath.name}: {len(data)} entries")
             for entry in data:
                 state = dict(max_states)
                 for comp, val in entry["degraded"].items():
@@ -186,47 +191,57 @@ def main():
     t_search = time.time() - t0
     print(f"\nPhase 1 complete: {len(all_failures)} failures in {t_search:.1f}s")
 
-    if not all_failures:
-        print("No failures found. Exiting.")
-        return
-
     # ==================================================================
     # Phase 2: Minimize failures into minimal rules
     # ==================================================================
-    print(f"\n{'='*60}")
-    print(f"Phase 2: Minimizing {len(all_failures)} failures into rules")
-    print(f"{'='*60}")
+    seed_rules_path = output_dir / "seed_rules_fail.json"
+    t_minimize = 0.0
 
-    t1 = time.time()
-    seed_rules = []
+    if seed_rules_path.exists():
+        print(f"\n{'='*60}")
+        print("Phase 2: Loading pre-minimized rules")
+        print(f"{'='*60}")
+        with open(seed_rules_path) as f:
+            unique_rules = json.load(f)
+        print(f"  Loaded {len(unique_rules)} rules from {seed_rules_path}")
+    elif not all_failures:
+        print("No failures found and no seed_rules_fail.json. Exiting.")
+        return
+    else:
+        print(f"\n{'='*60}")
+        print(f"Phase 2: Minimizing {len(all_failures)} failures into rules")
+        print(f"{'='*60}")
 
-    for i, (comps_st, fval, sys_st) in enumerate(all_failures):
-        min_rule, info = tsum.minimise_fail_states_random(
-            comps_st, sfun, max_state=n_state - 1,
-            sys_fail_st=0, fval=fval)
-        seed_rules.append(min_rule)
-        if (i + 1) % 50 == 0 or i == len(all_failures) - 1:
-            n_conds = sum(1 for kn in min_rule if kn != 'sys')
-            print(f"  Minimized {i+1}/{len(all_failures)} "
-                  f"(last: {n_conds} conditions)", flush=True)
+        t1 = time.time()
+        seed_rules = []
 
-    t_minimize = time.time() - t1
+        for i, (comps_st, fval, sys_st) in enumerate(all_failures):
+            min_rule, info = tsum.minimise_fail_states_random(
+                comps_st, sfun, max_state=n_state - 1,
+                sys_fail_st=0, fval=fval)
+            seed_rules.append(min_rule)
+            if (i + 1) % 50 == 0 or i == len(all_failures) - 1:
+                n_conds = sum(1 for kn in min_rule if kn != 'sys')
+                print(f"  Minimized {i+1}/{len(all_failures)} "
+                      f"(last: {n_conds} conditions)", flush=True)
 
-    # Deduplicate
-    unique_rules = []
-    seen_keys = set()
-    for rule in seed_rules:
-        key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v)
-                           for k, v in rule.items()))
-        if key not in seen_keys:
-            seen_keys.add(key)
-            unique_rules.append(rule)
+        t_minimize = time.time() - t1
 
-    print(f"\nPhase 2 complete: {len(unique_rules)} unique rules "
-          f"(from {len(seed_rules)}) in {t_minimize:.1f}s")
+        # Deduplicate
+        unique_rules = []
+        seen_keys = set()
+        for rule in seed_rules:
+            key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v)
+                               for k, v in rule.items()))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_rules.append(rule)
 
-    with open(output_dir / "seed_rules_fail.json", "w") as f:
-        json.dump(unique_rules, f, indent=2)
+        print(f"\nPhase 2 complete: {len(unique_rules)} unique rules "
+              f"(from {len(seed_rules)}) in {t_minimize:.1f}s")
+
+        with open(seed_rules_path, "w") as f:
+            json.dump(unique_rules, f, indent=2)
 
     lengths = [sum(1 for kn in r if kn != 'sys') for r in unique_rules]
     dist = Counter(lengths)
@@ -245,10 +260,19 @@ def main():
     print("Phase 3: TSUM rule extraction (seeded with fixed-k rules)")
     print(f"{'='*60}")
 
+    # Extract critical components from seed rules
+    critical = tsum.get_critical_components(unique_rules, min_frequency=0.3)
+    if critical:
+        print(f"  Critical components: {', '.join(critical)}")
+
     disc_probs = None
     if args.bias_factor > 0:
-        disc_probs = tsum.make_discovery_probs(probs_tensor, bias_factor=args.bias_factor)
-        print(f"  Bias factor: {args.bias_factor}")
+        disc_probs = tsum.make_discovery_probs(
+            probs_tensor, bias_factor=args.bias_factor,
+            row_names=row_names, critical_components=critical)
+        print(f"  Bias factor: {args.bias_factor}"
+              f" (critical: {args.bias_factor * 10})"
+              if critical else f"  Bias factor: {args.bias_factor}")
 
     print(f"  Seed rules:  {len(unique_rules)} failure rules")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")

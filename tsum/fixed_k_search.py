@@ -169,47 +169,57 @@ def run_fixed_k_pipeline(
     t_search = time.time() - t0
     print(f"\nPhase 1 complete: {len(all_failures)} total failures in {t_search:.1f}s")
 
-    if not all_failures:
-        print("No failures found. Exiting.")
-        return
-
     # ==================================================================
     # Phase 2: Minimize failures into minimal rules
     # ==================================================================
-    print(f"\n{'='*60}")
-    print(f"Phase 2: Minimizing {len(all_failures)} failures into rules")
-    print(f"{'='*60}")
+    seed_rules_path = output_dir / "seed_rules_fail.json"
+    t_minimize = 0.0
 
-    t1 = time.time()
-    seed_rules = []
+    if seed_rules_path.exists():
+        print(f"\n{'='*60}")
+        print("Phase 2: Loading pre-minimized rules")
+        print(f"{'='*60}")
+        with open(seed_rules_path) as f:
+            unique_rules = json.load(f)
+        print(f"  Loaded {len(unique_rules)} rules from {seed_rules_path}")
+    elif not all_failures:
+        print("No failures found and no seed_rules_fail.json. Exiting.")
+        return
+    else:
+        print(f"\n{'='*60}")
+        print(f"Phase 2: Minimizing {len(all_failures)} failures into rules")
+        print(f"{'='*60}")
 
-    for i, (comps_st, fval, sys_st) in enumerate(all_failures):
-        min_rule, info = tsum.minimise_fail_states_random(
-            comps_st, sfun, max_state=n_state - 1,
-            sys_fail_st=0, fval=fval)
-        seed_rules.append(min_rule)
-        if (i + 1) % 50 == 0 or i == len(all_failures) - 1:
-            n_conds = sum(1 for kn in min_rule if kn != 'sys')
-            print(f"  Minimized {i+1}/{len(all_failures)} "
-                  f"(last: {n_conds} conditions)", flush=True)
+        t1 = time.time()
+        seed_rules = []
 
-    t_minimize = time.time() - t1
+        for i, (comps_st, fval, sys_st) in enumerate(all_failures):
+            min_rule, info = tsum.minimise_fail_states_random(
+                comps_st, sfun, max_state=n_state - 1,
+                sys_fail_st=0, fval=fval)
+            seed_rules.append(min_rule)
+            if (i + 1) % 50 == 0 or i == len(all_failures) - 1:
+                n_conds = sum(1 for kn in min_rule if kn != 'sys')
+                print(f"  Minimized {i+1}/{len(all_failures)} "
+                      f"(last: {n_conds} conditions)", flush=True)
 
-    # Deduplicate rules
-    unique_rules = []
-    seen_keys = set()
-    for rule in seed_rules:
-        key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v)
-                           for k, v in rule.items()))
-        if key not in seen_keys:
-            seen_keys.add(key)
-            unique_rules.append(rule)
+        t_minimize = time.time() - t1
 
-    print(f"\nPhase 2 complete: {len(unique_rules)} unique rules "
-          f"(from {len(seed_rules)}) in {t_minimize:.1f}s")
+        # Deduplicate rules
+        unique_rules = []
+        seen_keys = set()
+        for rule in seed_rules:
+            key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v)
+                               for k, v in rule.items()))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_rules.append(rule)
 
-    with open(output_dir / "seed_rules_fail.json", "w") as f:
-        json.dump(unique_rules, f, indent=2)
+        print(f"\nPhase 2 complete: {len(unique_rules)} unique rules "
+              f"(from {len(seed_rules)}) in {t_minimize:.1f}s")
+
+        with open(seed_rules_path, "w") as f:
+            json.dump(unique_rules, f, indent=2)
 
     # Show distribution
     from collections import Counter
