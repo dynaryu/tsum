@@ -2413,9 +2413,21 @@ def run_rule_extraction_by_mcs(
 
     n_vars = len(row_names)
     if rules_mat_surv is None:
-        rules_mat_surv = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
+        if rules_surv:
+            mats = [from_rule_dict_to_mat(r, row_names, n_state).to(device)
+                    for r in rules_surv]
+            rules_mat_surv = torch.stack(mats, dim=0)
+            print(f"Loaded {len(rules_surv)} initial survival rules")
+        else:
+            rules_mat_surv = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
     if rules_mat_fail is None:
-        rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
+        if rules_fail:
+            mats = [from_rule_dict_to_mat(r, row_names, n_state).to(device)
+                    for r in rules_fail]
+            rules_mat_fail = torch.stack(mats, dim=0)
+            print(f"Loaded {len(rules_fail)} initial failure rules")
+        else:
+            rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
 
     sys_val_list: List[Any] = []
 

@@ -1,87 +1,44 @@
 """
-Fixed-k search for IEEE 118-bus: find short failure rules, then seed TSUM.
+Fixed-k search: find short failure rules by sampling k degraded components.
+
+A general-purpose tool for discovering short failure rules that dominate
+system failure probability. Can be used standalone for discovery, or as
+a seeding step before TSUM rule extraction.
 
 Phase 1: Randomly sample combinations of k degraded components (worst-state)
-          and check if the system fails. Or load pre-computed failures.
+          and check if the system fails.
 Phase 2: Minimize discovered failures into minimal rules.
-Phase 3: Seed TSUM with the discovered rules and continue MCS rule extraction.
+Phase 3 (optional): Seed TSUM with discovered rules and continue MCS extraction.
 
 Usage:
     # Discovery only
-    python run_fixed_k_search.py --k 2 3 --n-samples 100000 --n-workers 48
+    python -m tsum.fixed_k_search --sfun-module path/to/sfun_module.py \\
+        --data-dir path/to/tsum_data --k 2 3 --n-samples 100000
 
-    # Full pipeline: discover + minimize + run TSUM
-    python run_fixed_k_search.py --k 2 3 4 --n-samples 500000 --n-workers 192 --run-tsum
-    python run_fixed_k_search.py --k 3 4 5 --n-samples 500000 --n-workers 192 --run-tsum --bias-factor 10
+    # Load pre-computed failures and seed TSUM
+    python -m tsum.fixed_k_search --sfun-module path/to/sfun_module.py \\
+        --data-dir path/to/tsum_data --load-failures results/failures_k3.json \\
+        --run-tsum --output-dir results_seeded
 
-    # Load pre-computed failures and seed TSUM (skip Phase 1)
-    python run_fixed_k_search.py --load-failures results_fixedk/failures_k3.json results_fixedk/failures_k4.json --run-tsum --n-workers 192 --output-dir results_seeded
-    python run_fixed_k_search.py --load-failures results_fixedk/failures_k3.json --run-tsum --bias-factor 10 --output-dir results_seeded_bf10
+See demos/case118/run_fixed_k_search.py for a case-specific example.
 """
 
 import sys
 import os
 import time
+import json
 import argparse
 from pathlib import Path
-from collections import Counter
 
 os.environ["PYTHONUNBUFFERED"] = "1"
-sys.stdout.reconfigure(line_buffering=True)
 
-import json
 import torch
-
-HERE = Path(__file__).parent
-ROOT = HERE.resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(HERE))
-
-from sfun_dcopt import make_dcopt_sfun
 from tsum import tsum
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Fixed-k search + TSUM seeding (IEEE 118-bus)")
-    # Fixed-k search parameters
-    parser.add_argument("--k", type=int, nargs="+", default=[2, 3],
-                        help="Number of components to degrade (e.g. --k 2 3 4)")
-    parser.add_argument("--n-samples", type=int, default=100_000,
-                        help="Random k-combinations to test per k (default: 100000)")
-    parser.add_argument("--n-workers", type=int, default=1,
-                        help="Parallel workers (default: 1)")
-    parser.add_argument("--priority", type=str, default="",
-                        help="Comma-separated priority components")
-    parser.add_argument("--no-worst-state", action="store_true",
-                        help="Sample degraded states by probability instead of worst state")
-    parser.add_argument("--load-failures", type=str, nargs="+", default=None,
-                        help="Load pre-computed failure JSON files (skip Phase 1)")
-    # TSUM parameters
-    parser.add_argument("--run-tsum", action="store_true",
-                        help="After discovery, seed TSUM and run MCS extraction")
-    parser.add_argument("--unk-prob-thres", type=float, default=1e-5,
-                        help="TSUM convergence threshold (default: 1e-5)")
-    parser.add_argument("--bias-factor", type=float, default=0.0,
-                        help="Bias factor for TSUM discovery sampling (0=off)")
-    parser.add_argument("--bias-rounds", type=int, default=0,
-                        help="Use biased sampling for first N rounds (0=all)")
-    parser.add_argument("--devices", type=str, default="",
-                        help="Comma-separated GPU devices for TSUM")
-    parser.add_argument("--output-dir", type=str, default="",
-                        help="Output directory (default: results_fixedk)")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    print("=" * 60)
-    print(f"Fixed-k search on IEEE 118-bus DC-OPF")
-    print("=" * 60)
-
-    # Load input data
-    data_dir = HERE / "case118_tsum_bus"
+def load_tsum_inputs(data_dir):
+    """Load standard TSUM inputs (edges.json, probs.json) from a directory."""
+    data_dir = Path(data_dir)
     with open(data_dir / "edges.json") as f:
         edges = json.load(f)
     with open(data_dir / "probs.json") as f:
@@ -90,62 +47,89 @@ def main():
     row_names = list(probs_dict.keys())
     n_state = max(len(v) for v in probs_dict.values())
 
-    print(f"\n  Components:  {len(row_names)} total")
-    print(f"  Max states:  {n_state}")
-    print(f"  Threshold:   13.8% blackout (Scenario 1)")
-
-    # Build probability tensor
-    device_list = [d.strip() for d in args.devices.split(",") if d.strip()] if args.devices else []
-    device = torch.device(device_list[0] if device_list else ("cuda" if torch.cuda.is_available() else "cpu"))
-    multi_devices = device_list if len(device_list) > 1 else None
-
     probs_list = []
     for name in row_names:
         p = probs_dict[name]
-        row = [p[str(s)]["p"] if str(s) in p else 0.0 for s in range(n_state)]
+        row = [p[str(s)]["p"] if str(s) in p else 0.0
+               for s in range(n_state)]
         probs_list.append(row)
-    probs_tensor = torch.tensor(probs_list, dtype=torch.float32, device=device)
+    probs_tensor = torch.tensor(probs_list, dtype=torch.float32)
 
-    # Build system function
-    print("\nInitialising DC-OPF system function...")
-    sfun = make_dcopt_sfun(
-        case_path=str(HERE / "case118.m"),
-        blackout_threshold=13.8,
-        alpha=2.0,
-    )
+    return row_names, n_state, probs_tensor, probs_dict
 
-    output_dir = Path(args.output_dir) if args.output_dir else HERE / "results_fixedk"
+
+def run_fixed_k_pipeline(
+    sfun,
+    row_names,
+    n_state,
+    probs_tensor,
+    k_values,
+    n_samples=100_000,
+    n_workers=1,
+    priority_components=None,
+    worst_state=True,
+    load_failures=None,
+    run_tsum=False,
+    unk_prob_thres=1e-5,
+    bias_factor=0.0,
+    bias_rounds=0,
+    devices=None,
+    output_dir="results_fixedk",
+):
+    """Run the full fixed-k search pipeline.
+
+    Args:
+        sfun: system function
+        row_names: component names
+        n_state: max states per component
+        probs_tensor: (n_var, n_state) probability tensor
+        k_values: list of k values to search
+        n_samples: samples per k
+        n_workers: parallel workers
+        priority_components: priority component list
+        worst_state: use worst state (True) or sample by probability
+        load_failures: list of paths to pre-computed failure JSON files to load
+        run_tsum: whether to run TSUM after discovery
+        unk_prob_thres: TSUM convergence threshold
+        bias_factor: TSUM bias factor
+        bias_rounds: TSUM bias rounds
+        devices: GPU device list
+        output_dir: output directory
+    """
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    priority = [c.strip() for c in args.priority.split(",") if c.strip()] if args.priority else None
+    device = probs_tensor.device
+    multi_devices = devices if devices and len(devices) > 1 else None
 
-    # Build max states lookup
+    # Build max states for output
     max_states = {}
     for i, name in enumerate(row_names):
         row = probs_tensor[i]
         nonzero = (row > 0).nonzero(as_tuple=True)[0]
         max_states[name] = int(nonzero[-1].item()) if len(nonzero) > 0 else 0
 
-    all_failures = []  # list of (comps_st, fval, sys_st)
+    all_failures = []
     t0 = time.time()
 
     # ==================================================================
-    # Phase 1
+    # Phase 1: Fixed-k search (or load pre-computed)
     # ==================================================================
-    if args.load_failures:
+    if load_failures:
         print(f"\n{'='*60}")
         print("Phase 1: Loading pre-computed failures")
         print(f"{'='*60}")
-
-        for fpath in args.load_failures:
+        for fpath in load_failures:
             data = json.load(open(fpath))
-            print(f"  {fpath}: {len(data)} entries")
+            print(f"  {fpath}: {len(data)} failures")
             for entry in data:
+                # Reconstruct full state dict
                 state = dict(max_states)
                 for comp, val in entry["degraded"].items():
                     state[comp] = val
+                # We don't have fval/sys_st from file, re-evaluate
                 fval, sys_st, _ = sfun(state)
-                if sys_st < 1:
+                if sys_st < 1:  # verify it's still a failure
                     all_failures.append((state, fval, sys_st))
         print(f"Loaded {len(all_failures)} verified failures")
     else:
@@ -153,7 +137,7 @@ def main():
         print("Phase 1: Fixed-k search for short failure modes")
         print(f"{'='*60}")
 
-        for k in args.k:
+        for k in k_values:
             print(f"\n--- k={k} ---")
             failures = tsum.fixed_k_search(
                 sfun=sfun,
@@ -162,10 +146,10 @@ def main():
                 sys_surv_st=1,
                 probs=probs_tensor,
                 k=k,
-                n_samples=args.n_samples,
-                n_workers=args.n_workers,
-                priority_components=priority,
-                worst_state=not args.no_worst_state,
+                n_samples=n_samples,
+                n_workers=n_workers,
+                priority_components=priority_components,
+                worst_state=worst_state,
             )
             all_failures.extend(failures)
 
@@ -181,10 +165,9 @@ def main():
                 })
             with open(output_dir / f"failures_k{k}.json", "w") as f:
                 json.dump(failures_out, f, indent=2)
-            print(f"  Saved {len(failures_out)} failures to failures_k{k}.json")
 
     t_search = time.time() - t0
-    print(f"\nPhase 1 complete: {len(all_failures)} failures in {t_search:.1f}s")
+    print(f"\nPhase 1 complete: {len(all_failures)} total failures in {t_search:.1f}s")
 
     if not all_failures:
         print("No failures found. Exiting.")
@@ -212,7 +195,7 @@ def main():
 
     t_minimize = time.time() - t1
 
-    # Deduplicate
+    # Deduplicate rules
     unique_rules = []
     seen_keys = set()
     for rule in seed_rules:
@@ -228,33 +211,34 @@ def main():
     with open(output_dir / "seed_rules_fail.json", "w") as f:
         json.dump(unique_rules, f, indent=2)
 
+    # Show distribution
+    from collections import Counter
     lengths = [sum(1 for kn in r if kn != 'sys') for r in unique_rules]
     dist = Counter(lengths)
     print(f"\nSeed rule length distribution:")
     for l in sorted(dist):
         print(f"  {l} conditions: {dist[l]} rules")
 
-    if not args.run_tsum:
+    if not run_tsum:
         print("\nDone. Use --run-tsum to continue with TSUM rule extraction.")
-        return
+        return unique_rules
 
     # ==================================================================
-    # Phase 3: Seed TSUM and run MCS rule extraction
+    # Phase 3: Seed TSUM
     # ==================================================================
     print(f"\n{'='*60}")
     print("Phase 3: TSUM rule extraction (seeded with fixed-k rules)")
     print(f"{'='*60}")
 
     disc_probs = None
-    if args.bias_factor > 0:
-        disc_probs = tsum.make_discovery_probs(probs_tensor, bias_factor=args.bias_factor)
-        print(f"  Bias factor: {args.bias_factor}")
+    if bias_factor > 0:
+        disc_probs = tsum.make_discovery_probs(probs_tensor, bias_factor=bias_factor)
+        print(f"  Bias factor: {bias_factor}")
 
     print(f"  Seed rules:  {len(unique_rules)} failure rules")
-    print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
-    print(f"  Device:      {device}")
-    if args.n_workers > 1:
-        print(f"  Workers:     {args.n_workers}")
+    print(f"  Convergence: unk_prob < {unk_prob_thres:.0e}")
+    if n_workers > 1:
+        print(f"  Workers:     {n_workers}")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t2 = time.time()
@@ -265,13 +249,13 @@ def main():
         n_state=n_state,
         sys_surv_st=1,
         rules_fail=unique_rules,
-        unk_prob_thres=args.unk_prob_thres,
+        unk_prob_thres=unk_prob_thres,
         unk_prob_opt='abs',
         n_sample=1_000_000,
         sample_batch_size=100_000,
         discovery_probs=disc_probs,
-        bias_rounds=args.bias_rounds,
-        n_workers=args.n_workers,
+        bias_rounds=bias_rounds,
+        n_workers=n_workers,
         devices=multi_devices,
         output_dir=str(output_dir),
     )
@@ -279,7 +263,6 @@ def main():
 
     print(f"\nTSUM completed in {t_tsum:.1f}s")
     print(f"Total time: {time.time() - t0:.1f}s")
-    print(f"Results saved to: {output_dir}")
 
     # Summary
     metrics_path = output_dir / "metrics.json"
@@ -288,7 +271,7 @@ def main():
             rounds = [json.loads(line) for line in f if line.strip()]
         last = rounds[-1]
         print(f"\n--- Summary ---")
-        print(f"  Phase 1:      {t_search:.1f}s")
+        print(f"  Fixed-k/load: {t_search:.1f}s")
         print(f"  Minimization: {t_minimize:.1f}s")
         print(f"  TSUM rounds:  {len(rounds)} ({t_tsum:.1f}s)")
         print(f"  Surv rules:   {last.get('n_rules_surv', '?')}")
@@ -296,10 +279,5 @@ def main():
         print(f"  P(survival):  {last.get('p_survival', '?')}")
         print(f"  P(failure):   {last.get('p_failure', '?')}")
         print(f"  P(unknown):   {last.get('p_unknown', '?')}")
-        p_fail = last.get('p_failure', 0)
-        print(f"\n  Reference (Chan et al. Table 2): p_f ~ 1.0e-4")
-        print(f"  TSUM estimate:                   p_f ~ {p_fail:.2e}")
 
-
-if __name__ == "__main__":
-    main()
+    return unique_rules
