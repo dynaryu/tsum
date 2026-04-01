@@ -163,111 +163,21 @@ def load_failures_from_dir(
     return all_failures
 
 
-def run_fixed_k_pipeline(
-    sfun,
-    row_names,
-    n_state,
-    probs_tensor,
-    k_values,
-    n_samples=100_000,
-    n_workers=1,
-    priority_components=None,
-    worst_state=True,
-    load_failures=None,
-    run_tsum=False,
-    unk_prob_thres=1e-5,
-    bias_factor=0.0,
-    bias_rounds=0,
-    devices=None,
-    output_dir="results_fixedk",
-    survival=False,
-    target_components=None,
-):
-    """Run the full fixed-k search pipeline.
+def _run_failure_search(sfun, row_names, n_state, probs_tensor, k_values,
+                        n_samples, n_workers, priority_components, worst_state,
+                        load_failures, max_states, output_dir):
+    """Phase 1 failure search: find short failure modes."""
+    all_failures = []
 
-    Args:
-        sfun: system function
-        row_names: component names
-        n_state: max states per component
-        probs_tensor: (n_var, n_state) probability tensor
-        k_values: list of k values to search
-        n_samples: samples per k
-        n_workers: parallel workers
-        priority_components: priority component list
-        worst_state: use worst state (True) or sample by probability
-        load_failures: path to directory with failures_k*.json (skip Phase 1)
-        run_tsum: whether to run TSUM after discovery
-        unk_prob_thres: TSUM convergence threshold
-        bias_factor: TSUM bias factor
-        bias_rounds: TSUM bias rounds
-        devices: GPU device list
-        output_dir: output directory
-        survival: if True, search for survival rules (keep k operational,
-            degrade rest) instead of failure rules
-        target_components: for survival mode, restrict search to these
-            components (e.g., only generators). Others stay at best state.
-
-    Returns:
-        list of unique minimized rules, or None if no matches found
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    device = probs_tensor.device
-    multi_devices = devices if devices and len(devices) > 1 else None
-
-    max_states = _build_max_states(row_names, probs_tensor)
-    rule_type = "survival" if survival else "failure"
-
-    all_hits = []  # failures or survivals depending on mode
-    t0 = time.time()
-
-    # ==================================================================
-    # Phase 1: Fixed-k search (or load pre-computed)
-    # ==================================================================
-    if load_failures and not survival:
+    if load_failures:
         print(f"\n{'='*60}")
-        print("Phase 1: Loading pre-computed failures")
+        print("Phase 1a: Loading pre-computed failures")
         print(f"{'='*60}")
-        all_hits = load_failures_from_dir(load_failures, sfun, max_states)
-        print(f"Loaded {len(all_hits)} verified failures")
-    elif survival:
+        all_failures = load_failures_from_dir(load_failures, sfun, max_states)
+        print(f"Loaded {len(all_failures)} verified failures")
+    elif k_values:
         print(f"\n{'='*60}")
-        print("Phase 1: Fixed-k survival search (keep k operational)")
-        print(f"{'='*60}")
-
-        for k in k_values:
-            print(f"\n--- k={k} (keep {k} operational, degrade rest) ---")
-            survivals = tsum.fixed_k_survival_search(
-                sfun=sfun,
-                row_names=row_names,
-                n_state=n_state,
-                sys_surv_st=1,
-                probs=probs_tensor,
-                k=k,
-                n_samples=n_samples,
-                n_workers=n_workers,
-                priority_components=priority_components,
-                target_components=target_components,
-            )
-            all_hits.extend(survivals)
-
-            # Save per-k results
-            surv_out = []
-            for comps_st, fval, sys_st in survivals:
-                kept = {kn: v for kn, v in comps_st.items()
-                        if v >= max_states.get(kn, 0) and max_states.get(kn, 0) > 0}
-                surv_out.append({
-                    "kept_operational": kept,
-                    "n_kept": len(kept),
-                    "blackout_pct": round(fval, 3),
-                })
-            with open(output_dir / f"survivals_k{k}.json", "w") as f:
-                json.dump(surv_out, f, indent=2)
-            print(f"  Saved {len(surv_out)} survivals to survivals_k{k}.json")
-    else:
-        print(f"\n{'='*60}")
-        print("Phase 1: Fixed-k search for short failure modes")
+        print("Phase 1a: Fixed-k search for short failure modes")
         print(f"{'='*60}")
 
         for k in k_values:
@@ -284,7 +194,7 @@ def run_fixed_k_pipeline(
                 priority_components=priority_components,
                 worst_state=worst_state,
             )
-            all_hits.extend(failures)
+            all_failures.extend(failures)
 
             # Save per-k results
             failures_out = []
@@ -300,88 +210,123 @@ def run_fixed_k_pipeline(
                 json.dump(failures_out, f, indent=2)
             print(f"  Saved {len(failures_out)} failures to failures_k{k}.json")
 
-    t_search = time.time() - t0
-    print(f"\nPhase 1 complete: {len(all_hits)} total {rule_type}s in {t_search:.1f}s")
+    return all_failures
 
-    # ==================================================================
-    # Phase 2: Minimize into minimal rules (cached)
-    # ==================================================================
-    if survival:
-        seed_rules_path = output_dir / "seed_rules_surv.json"
-    else:
-        seed_rules_path = output_dir / "seed_rules_fail.json"
-    t_minimize = 0.0
 
-    if seed_rules_path.exists():
+def _run_survival_search(sfun, row_names, n_state, probs_tensor, k_values,
+                         n_samples, n_workers, priority_components,
+                         target_components, max_states, output_dir):
+    """Phase 1 survival search: find minimal sets that keep the system alive."""
+    all_survivals = []
+
+    if k_values:
         print(f"\n{'='*60}")
-        print("Phase 2: Loading pre-minimized rules")
-        print(f"{'='*60}")
-        with open(seed_rules_path) as f:
-            unique_rules = json.load(f)
-        print(f"  Loaded {len(unique_rules)} rules from {seed_rules_path}")
-    elif not all_hits:
-        print(f"No {rule_type}s found and no {seed_rules_path.name}. Exiting.")
-        return None
-    else:
-        print(f"\n{'='*60}")
-        print(f"Phase 2: Minimizing {len(all_hits)} {rule_type}s into rules")
+        print("Phase 1b: Fixed-k survival search (keep k operational)")
         print(f"{'='*60}")
 
-        t1 = time.time()
-        seed_rules = []
+        for k in k_values:
+            print(f"\n--- k={k} (keep {k} operational, degrade rest) ---")
+            survivals = tsum.fixed_k_survival_search(
+                sfun=sfun,
+                row_names=row_names,
+                n_state=n_state,
+                sys_surv_st=1,
+                probs=probs_tensor,
+                k=k,
+                n_samples=n_samples,
+                n_workers=n_workers,
+                priority_components=priority_components,
+                target_components=target_components,
+            )
+            all_survivals.extend(survivals)
 
-        for i, (comps_st, fval, sys_st) in enumerate(all_hits):
-            if survival:
-                min_rule, info = tsum.minimise_surv_states_random(
-                    comps_st, sfun, sys_surv_st=1, fval=fval)
-            else:
-                min_rule, info = tsum.minimise_fail_states_random(
-                    comps_st, sfun, max_state=n_state - 1,
-                    sys_fail_st=0, fval=fval)
-            seed_rules.append(min_rule)
-            if (i + 1) % 50 == 0 or i == len(all_hits) - 1:
-                n_conds = sum(1 for kn in min_rule if kn != 'sys')
-                print(f"  Minimized {i+1}/{len(all_hits)} "
-                      f"(last: {n_conds} conditions)", flush=True)
+            # Save per-k results
+            surv_out = []
+            for comps_st, fval, sys_st in survivals:
+                kept = {kn: v for kn, v in comps_st.items()
+                        if v >= max_states.get(kn, 0) and max_states.get(kn, 0) > 0}
+                surv_out.append({
+                    "kept_operational": kept,
+                    "n_kept": len(kept),
+                    "blackout_pct": round(fval, 3),
+                })
+            with open(output_dir / f"survivals_k{k}.json", "w") as f:
+                json.dump(surv_out, f, indent=2)
+            print(f"  Saved {len(surv_out)} survivals to survivals_k{k}.json")
 
-        t_minimize = time.time() - t1
+    return all_survivals
 
-        # Deduplicate rules
-        unique_rules = []
-        seen_keys = set()
-        for rule in seed_rules:
-            key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v)
-                               for k, v in rule.items()))
-            if key not in seen_keys:
-                seen_keys.add(key)
-                unique_rules.append(rule)
 
-        print(f"\nPhase 2 complete: {len(unique_rules)} unique {rule_type} rules "
-              f"(from {len(seed_rules)}) in {t_minimize:.1f}s")
+def _minimize_hits(hits, sfun, n_state, survival, label, output_path):
+    """Phase 2: minimize hits into minimal rules, deduplicate, and save."""
+    if output_path.exists():
+        print(f"  Loading pre-minimized {label} rules from {output_path.name}")
+        with open(output_path) as f:
+            return json.load(f)
 
-        with open(seed_rules_path, "w") as f:
-            json.dump(unique_rules, f, indent=2)
+    if not hits:
+        return []
 
-    # Show distribution
-    lengths = [sum(1 for kn in r if kn != 'sys') for r in unique_rules]
-    dist = Counter(lengths)
-    print(f"\nSeed rule length distribution:")
-    for l in sorted(dist):
-        print(f"  {l} conditions: {dist[l]} rules")
+    print(f"  Minimizing {len(hits)} {label}s...")
+    t1 = time.time()
+    raw_rules = []
 
-    if not run_tsum:
-        print("\nDone. Use --run-tsum to continue with TSUM rule extraction.")
-        return unique_rules
+    for i, (comps_st, fval, sys_st) in enumerate(hits):
+        if survival:
+            min_rule, info = tsum.minimise_surv_states_random(
+                comps_st, sfun, sys_surv_st=1, fval=fval)
+        else:
+            min_rule, info = tsum.minimise_fail_states_random(
+                comps_st, sfun, max_state=n_state - 1,
+                sys_fail_st=0, fval=fval)
+        raw_rules.append(min_rule)
+        if (i + 1) % 50 == 0 or i == len(hits) - 1:
+            n_conds = sum(1 for kn in min_rule if kn != 'sys')
+            print(f"    {i+1}/{len(hits)} (last: {n_conds} conditions)",
+                  flush=True)
 
-    # ==================================================================
-    # Phase 3: Seed TSUM and run MCS rule extraction
-    # ==================================================================
+    # Deduplicate
+    unique_rules = []
+    seen_keys = set()
+    for rule in raw_rules:
+        key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v)
+                           for k, v in rule.items()))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique_rules.append(rule)
+
+    elapsed = time.time() - t1
+    print(f"  {len(unique_rules)} unique {label} rules "
+          f"(from {len(raw_rules)}) in {elapsed:.1f}s")
+
+    with open(output_path, "w") as f:
+        json.dump(unique_rules, f, indent=2)
+
+    return unique_rules
+
+
+def _run_tsum_phase(sfun, probs_tensor, row_names, n_state,
+                    fail_rules, surv_rules,
+                    unk_prob_thres, bias_factor, bias_rounds,
+                    n_workers, multi_devices, output_dir,
+                    t0, t_search):
+    """Phase 3: Seed TSUM with pre-computed rules and run MCS extraction."""
+    device = probs_tensor.device
+
+    seed_types = []
+    if fail_rules:
+        seed_types.append(f"{len(fail_rules)} failure")
+    if surv_rules:
+        seed_types.append(f"{len(surv_rules)} survival")
+    seed_desc = " + ".join(seed_types) + " rules"
+
     print(f"\n{'='*60}")
-    print(f"Phase 3: TSUM rule extraction (seeded with {rule_type} rules)")
+    print(f"Phase 3: TSUM rule extraction (seeded with {seed_desc})")
     print(f"{'='*60}")
 
-    # Extract critical components from seed rules
-    critical = tsum.get_critical_components(unique_rules, min_frequency=0.3)
+    # Extract critical components from all seed rules
+    all_seed_rules = fail_rules + surv_rules
+    critical = tsum.get_critical_components(all_seed_rules, min_frequency=0.3)
     if critical:
         print(f"  Critical components: {', '.join(critical)}")
 
@@ -396,10 +341,7 @@ def run_fixed_k_pipeline(
         else:
             print(f"  Bias factor: {bias_factor}")
 
-    if survival:
-        print(f"  Seed rules:  {len(unique_rules)} survival rules")
-    else:
-        print(f"  Seed rules:  {len(unique_rules)} failure rules")
+    print(f"  Seed rules:  {seed_desc}")
     print(f"  Convergence: unk_prob < {unk_prob_thres:.0e}")
     print(f"  Device:      {device}")
     if n_workers > 1:
@@ -408,10 +350,10 @@ def run_fixed_k_pipeline(
 
     t2 = time.time()
     seed_kwargs = {}
-    if survival:
-        seed_kwargs['rules_surv'] = unique_rules
-    else:
-        seed_kwargs['rules_fail'] = unique_rules
+    if fail_rules:
+        seed_kwargs['rules_fail'] = fail_rules
+    if surv_rules:
+        seed_kwargs['rules_surv'] = surv_rules
 
     result = tsum.run_rule_extraction_by_mcs(
         sfun=sfun,
@@ -437,14 +379,14 @@ def run_fixed_k_pipeline(
     print(f"Results saved to: {output_dir}")
 
     # Summary
-    metrics_path = output_dir / "metrics.json"
+    metrics_path = Path(output_dir) / "metrics.json"
     if metrics_path.exists():
         with open(metrics_path) as f:
             rounds = [json.loads(line) for line in f if line.strip()]
         last = rounds[-1]
         print(f"\n--- Summary ---")
-        print(f"  Phase 1:      {t_search:.1f}s")
-        print(f"  Minimization: {t_minimize:.1f}s")
+        if t_search > 0:
+            print(f"  Phase 1:      {t_search:.1f}s")
         print(f"  TSUM rounds:  {len(rounds)} ({t_tsum:.1f}s)")
         print(f"  Surv rules:   {last.get('n_rules_surv', '?')}")
         print(f"  Fail rules:   {last.get('n_rules_fail', '?')}")
@@ -452,7 +394,232 @@ def run_fixed_k_pipeline(
         print(f"  P(failure):   {last.get('p_failure', '?')}")
         print(f"  P(unknown):   {last.get('p_unknown', '?')}")
 
-    return unique_rules
+    return {'fail_rules': fail_rules, 'surv_rules': surv_rules}
+
+
+def run_fixed_k_pipeline(
+    sfun,
+    row_names,
+    n_state,
+    probs_tensor,
+    k_values=None,
+    n_samples=100_000,
+    n_workers=1,
+    priority_components=None,
+    worst_state=True,
+    load_failures=None,
+    load_rules=None,
+    run_tsum=False,
+    unk_prob_thres=1e-5,
+    bias_factor=0.0,
+    bias_rounds=0,
+    devices=None,
+    output_dir="results_fixedk",
+    survival=False,
+    target_components=None,
+    surv_k_values=None,
+    surv_n_samples=None,
+):
+    """Run the full fixed-k search pipeline.
+
+    Supports three modes:
+      - Failure only (default): k_values for failure search
+      - Survival only: survival=True, k_values for survival search
+      - Both: k_values for failure search + surv_k_values for survival search
+
+    Args:
+        sfun: system function
+        row_names: component names
+        n_state: max states per component
+        probs_tensor: (n_var, n_state) probability tensor
+        k_values: list of k values for failure search (or survival if
+            survival=True and surv_k_values is not set)
+        n_samples: samples per k (failure search, or both if surv_n_samples
+            is not set)
+        n_workers: parallel workers
+        priority_components: priority component list
+        worst_state: use worst state (True) or sample by probability
+        load_failures: path to directory with failures_k*.json (skip Phase 1)
+        load_rules: path to directory containing pre-computed
+            seed_rules_fail.json and/or seed_rules_surv.json
+            (skip Phase 1 and 2, go straight to TSUM)
+        run_tsum: whether to run TSUM after discovery
+        unk_prob_thres: TSUM convergence threshold
+        bias_factor: TSUM bias factor
+        bias_rounds: TSUM bias rounds
+        devices: GPU device list
+        output_dir: output directory
+        survival: if True and surv_k_values is not set, treat k_values as
+            survival search (backward compatible)
+        target_components: for survival mode, restrict search to these
+            components (e.g., only generators). Others stay at best state.
+        surv_k_values: list of k values for survival search. When set,
+            runs survival search in addition to (or instead of) failure search.
+        surv_n_samples: samples per k for survival search (default: n_samples)
+
+    Returns:
+        dict with 'fail_rules' and/or 'surv_rules', or None if nothing found
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    device = probs_tensor.device
+    multi_devices = devices if devices and len(devices) > 1 else None
+
+    max_states = _build_max_states(row_names, probs_tensor)
+
+    if surv_n_samples is None:
+        surv_n_samples = n_samples
+
+    # ==================================================================
+    # Fast path: load pre-computed rules and go straight to TSUM
+    # ==================================================================
+    if load_rules:
+        load_rules = Path(load_rules)
+        fail_rules = []
+        surv_rules = []
+
+        fail_path = load_rules / "seed_rules_fail.json"
+        surv_path = load_rules / "seed_rules_surv.json"
+
+        if fail_path.exists():
+            with open(fail_path) as f:
+                fail_rules = json.load(f)
+            print(f"Loaded {len(fail_rules)} failure rules from {fail_path}")
+        if surv_path.exists():
+            with open(surv_path) as f:
+                surv_rules = json.load(f)
+            print(f"Loaded {len(surv_rules)} survival rules from {surv_path}")
+
+        if not fail_rules and not surv_rules:
+            print(f"No seed_rules_fail.json or seed_rules_surv.json "
+                  f"found in {load_rules}. Exiting.")
+            return None
+
+        # Show distributions
+        for label, rules in [("Failure", fail_rules), ("Survival", surv_rules)]:
+            if not rules:
+                continue
+            lengths = [sum(1 for kn in r if kn != 'sys') for r in rules]
+            dist = Counter(lengths)
+            print(f"\n{label} rule length distribution:")
+            for l in sorted(dist):
+                print(f"  {l} conditions: {dist[l]} rules")
+
+        if not run_tsum:
+            print("\nRules loaded. Use --run-tsum to run TSUM.")
+            return {'fail_rules': fail_rules, 'surv_rules': surv_rules}
+
+        # Jump to Phase 3
+        return _run_tsum_phase(
+            sfun=sfun, probs_tensor=probs_tensor, row_names=row_names,
+            n_state=n_state, fail_rules=fail_rules, surv_rules=surv_rules,
+            unk_prob_thres=unk_prob_thres, bias_factor=bias_factor,
+            bias_rounds=bias_rounds, n_workers=n_workers,
+            multi_devices=multi_devices, output_dir=output_dir,
+            t0=time.time(), t_search=0.0,
+        )
+
+    # Determine which searches to run
+    do_fail = False
+    do_surv = False
+    fail_k = None
+    surv_k = None
+
+    if surv_k_values is not None:
+        # Explicit survival k values provided
+        do_surv = True
+        surv_k = surv_k_values
+        if k_values:
+            do_fail = True
+            fail_k = k_values
+    elif survival:
+        # Backward compatible: survival=True uses k_values for survival
+        do_surv = True
+        surv_k = k_values or []
+    else:
+        # Default: failure search
+        do_fail = True
+        fail_k = k_values or []
+
+    # Also do failure search if load_failures is set
+    if load_failures:
+        do_fail = True
+
+    t0 = time.time()
+
+    # ==================================================================
+    # Phase 1: Fixed-k search
+    # ==================================================================
+    all_failures = []
+    all_survivals = []
+
+    if do_fail:
+        all_failures = _run_failure_search(
+            sfun, row_names, n_state, probs_tensor, fail_k,
+            n_samples, n_workers, priority_components, worst_state,
+            load_failures, max_states, output_dir)
+
+    if do_surv:
+        all_survivals = _run_survival_search(
+            sfun, row_names, n_state, probs_tensor, surv_k,
+            surv_n_samples, n_workers, priority_components,
+            target_components, max_states, output_dir)
+
+    t_search = time.time() - t0
+    total_hits = len(all_failures) + len(all_survivals)
+    if do_fail and do_surv:
+        print(f"\nPhase 1 complete: {len(all_failures)} failures + "
+              f"{len(all_survivals)} survivals in {t_search:.1f}s")
+    elif do_surv:
+        print(f"\nPhase 1 complete: {len(all_survivals)} survivals "
+              f"in {t_search:.1f}s")
+    else:
+        print(f"\nPhase 1 complete: {len(all_failures)} failures "
+              f"in {t_search:.1f}s")
+
+    if total_hits == 0 and not load_failures:
+        print("No failures or survivals found. Exiting.")
+        return None
+
+    # ==================================================================
+    # Phase 2: Minimize into minimal rules
+    # ==================================================================
+    print(f"\n{'='*60}")
+    print("Phase 2: Minimizing into rules")
+    print(f"{'='*60}")
+
+    fail_rules = _minimize_hits(
+        all_failures, sfun, n_state, survival=False, label="failure",
+        output_path=output_dir / "seed_rules_fail.json") if do_fail else []
+
+    surv_rules = _minimize_hits(
+        all_survivals, sfun, n_state, survival=True, label="survival",
+        output_path=output_dir / "seed_rules_surv.json") if do_surv else []
+
+    # Show distributions
+    for label, rules in [("Failure", fail_rules), ("Survival", surv_rules)]:
+        if not rules:
+            continue
+        lengths = [sum(1 for kn in r if kn != 'sys') for r in rules]
+        dist = Counter(lengths)
+        print(f"\n{label} rule length distribution:")
+        for l in sorted(dist):
+            print(f"  {l} conditions: {dist[l]} rules")
+
+    if not run_tsum:
+        print("\nDone. Use --run-tsum to continue with TSUM rule extraction.")
+        return {'fail_rules': fail_rules, 'surv_rules': surv_rules}
+
+    # Phase 3
+    return _run_tsum_phase(
+        sfun=sfun, probs_tensor=probs_tensor, row_names=row_names,
+        n_state=n_state, fail_rules=fail_rules, surv_rules=surv_rules,
+        unk_prob_thres=unk_prob_thres, bias_factor=bias_factor,
+        bias_rounds=bias_rounds, n_workers=n_workers,
+        multi_devices=multi_devices, output_dir=output_dir,
+        t0=t0, t_search=t_search,
+    )
 
 
 def _load_sfun_module(module_path, func_name="make_sfun", sfun_args=None):
@@ -519,8 +686,16 @@ def parse_args():
                         help="Comma-separated components to target (survival mode: only these are "
                              "degraded, rest stay operational). Use 'multistate' to auto-select "
                              "multi-state components (e.g., generators).")
+    parser.add_argument("--surv-k", type=int, nargs="+", default=None,
+                        help="k values for survival search (e.g. --surv-k 38 40 42 44). "
+                             "When set, runs survival search in addition to failure search.")
+    parser.add_argument("--surv-n-samples", type=int, default=None,
+                        help="Samples per k for survival search (default: same as --n-samples)")
     parser.add_argument("--load-failures", type=str, default=None,
                         help="Directory containing failures_k*.json files (skip Phase 1)")
+    parser.add_argument("--load-rules", type=str, default=None,
+                        help="Directory containing seed_rules_fail.json and/or "
+                             "seed_rules_surv.json (skip Phase 1 & 2)")
 
     # TSUM parameters
     parser.add_argument("--run-tsum", action="store_true",
@@ -580,7 +755,9 @@ def main():
             print(f"  Target:      {len(target_comps)} specified components")
 
     # Run pipeline
-    if args.survival:
+    if args.surv_k:
+        print(f"  Mode:        both failure (k={args.k}) + survival (k={args.surv_k})")
+    elif args.survival:
         print(f"  Mode:        survival (keep k operational)")
     run_fixed_k_pipeline(
         sfun=sfun,
@@ -593,6 +770,7 @@ def main():
         priority_components=priority,
         worst_state=not args.no_worst_state,
         load_failures=args.load_failures,
+        load_rules=args.load_rules,
         run_tsum=args.run_tsum,
         unk_prob_thres=args.unk_prob_thres,
         bias_factor=args.bias_factor,
@@ -601,6 +779,8 @@ def main():
         output_dir=args.output_dir,
         survival=args.survival,
         target_components=target_comps,
+        surv_k_values=args.surv_k,
+        surv_n_samples=args.surv_n_samples,
     )
 
 

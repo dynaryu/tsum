@@ -23,6 +23,7 @@ import sys
 import os
 import argparse
 from pathlib import Path
+import typer
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 sys.stdout.reconfigure(line_buffering=True)
@@ -36,6 +37,77 @@ sys.path.insert(0, str(HERE.parent))
 
 from dcopt import make_dcopt_sfun
 from tsum.fixed_k_search import load_tsum_inputs, run_fixed_k_pipeline
+
+
+app = typer.Typer()
+
+
+@app.command()
+def run_both_seeds(
+    fail_k: list[int] = typer.Option([2, 3, 4], "--fail-k", help="k values for failure search"),
+    fail_n_samples: int = typer.Option(100_000, "--fail-n-samples", help="Samples per failure k"),
+    surv_k: list[int] = typer.Option([38, 40, 42, 44], "--surv-k", help="k values for survival search"),
+    surv_n_samples: int = typer.Option(1000, "--surv-n-samples", help="Samples per survival k"),
+    n_workers: int = typer.Option(1, help="Parallel workers"),
+    run_tsum: bool = typer.Option(False, "--run-tsum", help="Run TSUM after discovery"),
+    bias_factor: float = typer.Option(0.0, help="TSUM bias factor"),
+    output_dir: str = typer.Option("results_both_seeded", help="Output directory"),
+):
+    """Find both failure and survival seed rules, optionally run TSUM with both."""
+    data_dir = HERE / "case118_tsum_bus"
+    row_names, n_state, probs_tensor, probs_dict = load_tsum_inputs(data_dir)
+    sfun = make_dcopt_sfun(
+        case_path=str(HERE / "case118.m"),
+        blackout_threshold=13.8,
+        alpha=2.0,
+    )
+    gen_names = [n for n in row_names if n.startswith('vbus') and len(probs_dict[n]) == 4]
+    run_fixed_k_pipeline(
+        sfun=sfun, row_names=row_names, n_state=n_state,
+        probs_tensor=probs_tensor,
+        k_values=fail_k, n_samples=fail_n_samples,
+        surv_k_values=surv_k, surv_n_samples=surv_n_samples,
+        target_components=gen_names,
+        n_workers=n_workers,
+        run_tsum=run_tsum, bias_factor=bias_factor,
+        output_dir=output_dir,
+    )
+
+
+@app.command()
+def run_tsum_seeded(
+    rules_dir: str = typer.Option("results_both_seeded", help="Directory with seed_rules_*.json"),
+    n_workers: int = typer.Option(1, help="Parallel workers"),
+    bias_factor: float = typer.Option(0.0, help="TSUM bias factor"),
+    bias_rounds: int = typer.Option(0, help="Biased sampling for first N rounds (0=all)"),
+    unk_prob_thres: float = typer.Option(1e-5, help="Convergence threshold"),
+    devices: str = typer.Option("", help="Comma-separated GPU devices"),
+    output_dir: str = typer.Option("results_seeded", help="Output directory"),
+):
+    """Run TSUM seeded with pre-computed failure and/or survival rules."""
+    data_dir = HERE / "case118_tsum_bus"
+    device_list = ([d.strip() for d in devices.split(",") if d.strip()]
+                   if devices else None)
+    device = torch.device(device_list[0] if device_list else
+                          ("cuda" if torch.cuda.is_available() else "cpu"))
+    row_names, n_state, probs_tensor, probs_dict = load_tsum_inputs(data_dir, device=device)
+    sfun = make_dcopt_sfun(
+        case_path=str(HERE / "case118.m"),
+        blackout_threshold=13.8,
+        alpha=2.0,
+    )
+    run_fixed_k_pipeline(
+        sfun=sfun, row_names=row_names, n_state=n_state,
+        probs_tensor=probs_tensor,
+        load_rules=rules_dir,
+        run_tsum=True,
+        n_workers=n_workers,
+        bias_factor=bias_factor,
+        bias_rounds=bias_rounds,
+        unk_prob_thres=unk_prob_thres,
+        devices=device_list,
+        output_dir=output_dir,
+    )
 
 
 def parse_args():
@@ -69,7 +141,7 @@ def parse_args():
                         help="Output directory (default: results_fixedk)")
     return parser.parse_args()
 
-
+@app.command()
 def main():
     args = parse_args()
 
@@ -137,4 +209,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    #main()
+    app()
