@@ -1,17 +1,18 @@
 """
-Run TSUM on IEEE 14-bus DC-OPF blackout model (branches + buses).
+Run TSUM on ACTIVSg2000 DC-OPF blackout model (branches + buses).
 
-Components: 34 total (14 buses + 20 branches)
-  - 5 generator buses: 4-state (0=removed, 1=40%cap, 2=80%cap, 3=full)
-  - 9 ordinary buses: 2-state (0=failed, 1=operational)
-  - 20 branches: 2-state (0=failed, 1=operational)
-System function: DC-OPF, blackout_threshold=54.8% (Scenario 1 from paper)
-Reference: Chan et al. (2024), Table 2: p_f ~ 1.1e-4
+Components: 5206 total (2000 buses + 3206 branches)
+  - 485 generator buses: 4-state (0=removed, 1=40%cap, 2=80%cap, 3=full)
+  - 1515 ordinary buses: 2-state (0=failed, 1=operational)
+  - 3206 branches: 2-state (0=failed, 1=operational)
+System function: DC-OPF with precomputed solver (~102ms/call)
+Reference: Chan et al. (2024), Table 2: p_f ~ 2.7e-3 (Scenario 1)
 
 Usage:
-    python run_case14_bus.py
-    python run_case14_bus.py --unk-prob-thres 1e-4
-    python run_case14_bus.py --devices cuda:0,cuda:1
+    python run_case2000_bus.py --blackout-threshold 3.0
+    python run_case2000_bus.py --blackout-threshold 3.0 --bias-factor 10 --n-workers 48
+    python run_case2000_bus.py --blackout-threshold 3.0 --walk-every 5 --walk-count 4 --n-workers 48
+    python run_case2000_bus.py --blackout-threshold 3.0 --n-workers 48 --output-dir results_bf10
 """
 
 import sys
@@ -36,11 +37,27 @@ from tsum import tsum
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="TSUM on IEEE 14-bus DC-OPF")
+    parser = argparse.ArgumentParser(description="TSUM on ACTIVSg2000 DC-OPF")
+    parser.add_argument("--blackout-threshold", type=float, default=3.0,
+                        help="Blackout threshold %% (default: 3.0)")
     parser.add_argument("--unk-prob-thres", type=float, default=1e-5,
                         help="Convergence threshold for unknown probability (default: 1e-5)")
     parser.add_argument("--devices", type=str, default="",
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
+    parser.add_argument("--bias-factor", type=float, default=0.0,
+                        help="Bias factor for discovery sampling (0=off, typical: 5-10)")
+    parser.add_argument("--bias-rounds", type=int, default=0,
+                        help="Use biased sampling for first N rounds, then switch to true probs (0=all rounds)")
+    parser.add_argument("--walk-every", type=int, default=0,
+                        help="Do boundary walks every N rounds (0=off, e.g. 5=walk on rounds 5,10,15,...)")
+    parser.add_argument("--walk-count", type=int, default=1,
+                        help="Number of boundary walks per walk round (default: 1)")
+    parser.add_argument("--n-workers", type=int, default=1,
+                        help="CPU workers for parallel sfun minimization (default: 1)")
+    parser.add_argument("--n-sample", type=int, default=1_000_000,
+                        help="Samples per round (default: 1,000,000)")
+    parser.add_argument("--output-dir", type=str, default="",
+                        help="Output directory (default: tsum_results_bus)")
     return parser.parse_args()
 
 
@@ -50,15 +67,16 @@ def main():
     multi_devices = device_list if len(device_list) > 1 else None
 
     print("=" * 60)
-    print("TSUM on IEEE 14-bus DC-OPF (branches + buses)")
+    print("TSUM on ACTIVSg2000 DC-OPF (branches + buses)")
     print("=" * 60)
 
     # ---------------------------------------------------------------
     # 1. Load input data
     # ---------------------------------------------------------------
-    with open(HERE / "edges_bus.json") as f:
+    data_dir = HERE / "case2000_tsum_bus"
+    with open(data_dir / "edges.json") as f:
         edges = json.load(f)
-    with open(HERE / "probs_bus.json") as f:
+    with open(data_dir / "probs.json") as f:
         probs_dict = json.load(f)
 
     row_names = list(probs_dict.keys())
@@ -75,7 +93,7 @@ def main():
     print(f"    Ordinary buses:  {n_ord_bus} (2-state)")
     print(f"    Branches:        {n_branch} (2-state)")
     print(f"  Max states:  {n_state}")
-    print(f"  Threshold:   54.8% blackout (Scenario 1)")
+    print(f"  Threshold:   {args.blackout_threshold}% blackout")
 
     # ---------------------------------------------------------------
     # 2. Build probability tensor (padded to n_state=4)
@@ -92,18 +110,24 @@ def main():
                                 device=device)
     print(f"  Device:      {device}")
 
+    # Build biased discovery probs if requested
+    disc_probs = None
+    if args.bias_factor > 0:
+        disc_probs = tsum.make_discovery_probs(probs_tensor, bias_factor=args.bias_factor)
+        print(f"  Bias factor: {args.bias_factor} (biased sampling for rule discovery)")
+
     # ---------------------------------------------------------------
     # 3. Build system function
     # ---------------------------------------------------------------
-    print("\nInitialising DC-OPF system function...")
-    case_path = str(HERE / "case14.m")
+    print("\nInitialising DC-OPF system function (precomputed solver)...")
+    case_path = str(HERE / "case_ACTIVSg2000.m")
     sfun = make_dcopt_sfun(
         case_path=case_path,
-        blackout_threshold=54.8,
+        blackout_threshold=args.blackout_threshold,
         alpha=2.0,
     )
 
-    # Sanity check: all operational (state = max for each component)
+    # Sanity check: all operational
     all_ok = {}
     for name in row_names:
         all_ok[name] = max(int(s) for s in probs_dict[name].keys())
@@ -118,12 +142,21 @@ def main():
     # ---------------------------------------------------------------
     # 4. Run TSUM rule extraction
     # ---------------------------------------------------------------
-    output_dir = HERE / "tsum_results_bus"
+    output_dir = Path(args.output_dir) if args.output_dir else HERE / "tsum_results_bus"
     print(f"\n  Output:      {output_dir}")
-    print(f"  Samples:     1,000,000 per round (batch 100,000)")
+    print(f"  Samples:     {args.n_sample:,} per round (batch 100,000)")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
+    if disc_probs is not None:
+        if args.bias_rounds > 0:
+            print(f"  Discovery:   biased sampling (factor={args.bias_factor}, first {args.bias_rounds} rounds)")
+        else:
+            print(f"  Discovery:   biased sampling (factor={args.bias_factor}, all rounds)")
+    if args.walk_every > 0:
+        print(f"  Walk:        every {args.walk_every} rounds, {args.walk_count} walks per round")
+    if args.n_workers > 1:
+        print(f"  Workers:     {args.n_workers} (parallel sfun minimization)")
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
@@ -135,8 +168,13 @@ def main():
         sys_surv_st=1,
         unk_prob_thres=args.unk_prob_thres,
         unk_prob_opt='abs',
-        n_sample=1_000_000,
+        n_sample=args.n_sample,
         sample_batch_size=100_000,
+        discovery_probs=disc_probs,
+        bias_rounds=args.bias_rounds,
+        walk_every=args.walk_every,
+        walk_count=args.walk_count,
+        n_workers=args.n_workers,
         devices=multi_devices,
         output_dir=output_dir,
     )
@@ -161,7 +199,7 @@ def main():
         print(f"  P(survival): {last.get('p_survival', '?')}")
         print(f"  P(failure):  {last.get('p_failure', '?')}")
         p_fail = last.get('p_failure', 0)
-        print(f"\n  Reference (Chan et al. Table 2): p_f ~ 1.1e-4")
+        print(f"\n  Reference (Chan et al. Table 2): p_f ~ 2.7e-3")
         print(f"  TSUM estimate:                   p_f ~ {p_fail:.2e}")
 
 

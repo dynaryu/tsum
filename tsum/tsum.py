@@ -1622,6 +1622,176 @@ def fixed_k_search(
     return failures
 
 
+def fixed_k_survival_search(
+    sfun: Callable,
+    row_names: List[str],
+    n_state: int,
+    sys_surv_st: int,
+    probs: torch.Tensor,
+    k: int = 10,
+    n_samples: int = 100_000,
+    n_workers: int = 1,
+    priority_components: Optional[List[str]] = None,
+    best_state: bool = True,
+    seed: Optional[int] = None,
+    target_components: Optional[List[str]] = None,
+) -> List[Tuple[Dict[str, int], float, int]]:
+    """Search for survival modes by keeping k components operational, rest degraded.
+
+    Inverse of fixed_k_search: randomly selects k components to keep at their
+    best state while degrading the rest to worst state. For each sample,
+    calls sfun to check if the system survives.
+
+    Args:
+        sfun: system function (comps_st -> (fval, sys_st, info))
+        row_names: component names
+        n_state: max number of states per component
+        sys_surv_st: system survival state threshold
+        probs: (n_var, n_state) probability tensor
+        k: number of target components to keep operational
+        n_samples: number of random k-combinations to test
+        n_workers: number of parallel workers (uses multiprocessing)
+        priority_components: if set, at least one component in each combo
+            must be from this list
+        best_state: if True, keep selected at best state (default);
+            if False, sample state weighted by probability
+        seed: random seed
+        target_components: if set, only these components are candidates for
+            keeping/degrading. All other components stay at best state.
+            This restricts the search to a subset (e.g., only generators).
+
+    Returns:
+        List of (comps_st_dict, fval, sys_st) for each survival found.
+    """
+    rng = random.Random(seed)
+
+    target_set = set(target_components) if target_components else None
+
+    # Build max-state and worst-state configurations
+    max_states = {}
+    min_states = {}
+    degradable_states = {}
+    keep_weights = {}
+    for i, name in enumerate(row_names):
+        row = probs[i]
+        nonzero = (row > 0).nonzero(as_tuple=True)[0]
+        if len(nonzero) > 0:
+            best = int(nonzero[-1].item())
+            worst = int(nonzero[0].item())
+            max_states[name] = best
+            min_states[name] = worst
+            # Only consider target components for degradation
+            if best > worst and (target_set is None or name in target_set):
+                degradable_states[name] = True
+                keep_weights[name] = float(row[best].item())
+            else:
+                keep_weights[name] = 0.0
+        else:
+            max_states[name] = 0
+            min_states[name] = 0
+
+    keepable_names = [n for n in row_names if n in degradable_states]
+    weights = [keep_weights[n] for n in keepable_names]
+
+    mode = "best-state" if best_state else "prob-weighted"
+    print(f"Fixed-k survival search: k={k}, {len(keepable_names)} components, "
+          f"{n_samples} samples, {mode}")
+
+    # Build priority index if specified
+    priority_indices = None
+    if priority_components:
+        priority_set = set(priority_components) & set(keepable_names)
+        priority_indices = [i for i, n in enumerate(keepable_names)
+                            if n in priority_set]
+        pri_weights = [weights[i] for i in priority_indices]
+        print(f"  Priority: {len(priority_indices)} components")
+
+    # Generate random k-combinations
+    tasks = []
+    seen = set()
+    attempts = 0
+    max_attempts = n_samples * 10
+
+    while len(tasks) < n_samples and attempts < max_attempts:
+        attempts += 1
+
+        if priority_indices and rng.random() < 0.5:
+            n_pri = rng.randint(1, min(k, len(priority_indices)))
+            pri_chosen = _weighted_sample_without_replacement(
+                rng, priority_indices, pri_weights, n_pri)
+            remaining_indices = [i for i in range(len(keepable_names))
+                                 if i not in set(pri_chosen)]
+            remaining_weights = [weights[i] for i in remaining_indices]
+            n_other = k - n_pri
+            if n_other > len(remaining_indices):
+                continue
+            other_chosen = _weighted_sample_without_replacement(
+                rng, remaining_indices, remaining_weights, n_other)
+            chosen = sorted(pri_chosen + other_chosen)
+        else:
+            chosen = sorted(_weighted_sample_without_replacement(
+                rng, list(range(len(keepable_names))), weights, k))
+
+        key = tuple(chosen)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Build state: target components degraded except chosen (kept operational),
+        # non-target components stay at best state
+        if target_set is not None:
+            # Start with all at best, then degrade only target components
+            state = dict(max_states)
+            for name in keepable_names:
+                state[name] = min_states[name]
+        else:
+            state = dict(min_states)
+        for idx in chosen:
+            name = keepable_names[idx]
+            state[name] = max_states[name]
+
+        tasks.append(state)
+
+    print(f"  Generated {len(tasks)} unique combinations "
+          f"({attempts} attempts)")
+
+    # Execute
+    survivals = []
+    n_tested = 0
+
+    if n_workers > 1:
+        global _MP_SFUN, _MP_SYS_SURV_ST, _MP_N_STATE
+        _MP_SFUN = sfun
+        _MP_SYS_SURV_ST = sys_surv_st
+        _MP_N_STATE = n_state
+
+        batch_size = max(n_workers * 4, 100)
+        with mp.Pool(n_workers) as pool:
+            for batch_start in range(0, len(tasks), batch_size):
+                batch = tasks[batch_start:batch_start + batch_size]
+                results = pool.map(_eval_sfun_worker, batch)
+                for comps_st, fval, sys_st in results:
+                    n_tested += 1
+                    if sys_st >= sys_surv_st:
+                        survivals.append((comps_st, fval, sys_st))
+                if n_tested % 10000 == 0 or batch_start + batch_size >= len(tasks):
+                    print(f"  Tested {n_tested}/{len(tasks)}, "
+                          f"survivals found: {len(survivals)}", flush=True)
+    else:
+        for comps_st in tasks:
+            fval, sys_st, _ = sfun(comps_st)
+            n_tested += 1
+            if sys_st >= sys_surv_st:
+                survivals.append((comps_st, fval, sys_st))
+            if n_tested % 10000 == 0 or n_tested == len(tasks):
+                print(f"  Tested {n_tested}/{len(tasks)}, "
+                      f"survivals found: {len(survivals)}", flush=True)
+
+    print(f"Fixed-k survival search complete: {len(survivals)} survivals in "
+          f"{n_tested} evaluations")
+    return survivals
+
+
 def _weighted_sample_without_replacement(rng, indices, weights, k):
     """Sample k items from indices without replacement, weighted."""
     if k >= len(indices):

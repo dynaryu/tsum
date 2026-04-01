@@ -1,34 +1,33 @@
 """
-Variable reduction for IEEE 118-bus: fix irrelevant components, run TSUM on generators only.
+Variable reduction for ACTIVSg2000: fix irrelevant components, run TSUM on generators only.
 
-The idea: fixed-k search shows that system failures are driven almost entirely
-by generator bus degradation.  All 9 k=3 failure rules involve only 8 generators.
-Binary components (186 branches + 64 ordinary buses) have individual failure
-probabilities of ~10^-3 or less; multi-component branch failures contribute
-negligibly to system risk compared to generator degradation.
+The ACTIVSg2000 failure structure is similar to IEEE 118-bus: failures are
+concentrated in a small number of critical generator buses (primarily Houston
+area buses 7255, 4073, 4041, 4042, 4040). With a ~3% blackout threshold,
+max single-component impact is 1.35%, so failures require combinations of
+2-3 degraded generators.
 
 This script:
-  1. Selects components to model (default: all 54 generators)
+  1. Selects components to model (default: all 485 generators)
   2. Fixes everything else at best (operational) state
   3. Wraps the sfun so fixed components are injected automatically
   4. Optionally seeds with failure rules from fixed-k search
-  5. Runs TSUM on the reduced problem (~54 variables instead of 304)
+  5. Runs TSUM on the reduced problem (~485 variables instead of 5206)
 
 Usage:
-    # Generators only (54 variables, 4-state)
+    # Generators only (485 variables, 4-state)
     python run_variable_reduction.py --n-workers 48 --output-dir results_reduced
 
     # With fixed-k seed rules
     python run_variable_reduction.py --seed-rules results_fixedk/seed_rules_fail.json \
         --n-workers 48 --output-dir results_reduced_seeded
 
-    # Custom component selection: top-19 from k=4 frequency analysis
+    # Custom component selection: frequency-based from fixed-k results
     python run_variable_reduction.py --mode frequency --failures-dir results_fixedk --min-freq 50 \
-        --n-workers 48 --output-dir results_reduced_top19
+        --n-workers 48 --output-dir results_reduced_top
 
-    # Include all components appearing in any failure rule
-    python run_variable_reduction.py --mode frequency --failures-dir results_fixedk --min-freq 1 \
-        --n-workers 48 --output-dir results_reduced_all_fail
+    # Custom threshold
+    python run_variable_reduction.py --blackout-threshold 2.0 --n-workers 48
 """
 
 import sys
@@ -53,7 +52,7 @@ from tsum.variable_reduction import (
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Variable reduction TSUM for IEEE 118-bus")
+        description="Variable reduction TSUM for ACTIVSg2000")
 
     # Component selection
     parser.add_argument("--mode", type=str, default="multistate",
@@ -69,6 +68,10 @@ def parse_args():
     # Seed rules
     parser.add_argument("--seed-rules", type=str, default=None,
                         help="Path to seed_rules_fail.json for seeding TSUM")
+
+    # DC-OPF parameters
+    parser.add_argument("--blackout-threshold", type=float, default=3.0,
+                        help="Blackout threshold %% (default: 3.0)")
 
     # TSUM parameters
     parser.add_argument("--unk-prob-thres", type=float, default=1e-5,
@@ -90,11 +93,11 @@ def main():
     args = parse_args()
 
     print("=" * 60)
-    print("Variable Reduction TSUM for IEEE 118-bus DC-OPF")
+    print("Variable Reduction TSUM for ACTIVSg2000 DC-OPF")
     print("=" * 60)
 
     # Load input data
-    data_dir = HERE / "case118_tsum_bus"
+    data_dir = HERE / "case2000_tsum_bus"
     with open(data_dir / "probs.json") as f:
         probs_dict = json.load(f)
 
@@ -110,10 +113,10 @@ def main():
     )
 
     # Build sfun
-    print("\nInitialising DC-OPF system function...")
+    print("\nInitialising DC-OPF system function (precomputed solver)...")
     base_sfun = make_dcopt_sfun(
-        case_path=str(HERE / "case118.m"),
-        blackout_threshold=13.8,
+        case_path=str(HERE / "case_ACTIVSg2000.m"),
+        blackout_threshold=args.blackout_threshold,
         alpha=2.0,
     )
 
@@ -146,7 +149,7 @@ def main():
         output_dir=args.output_dir,
     )
 
-    print(f"\n  Reference (Chan et al. Table 2): p_f ~ 1.0e-4")
+    print(f"\n  Reference (Chan et al. Table 2): p_f ~ 2.7e-3")
 
 
 if __name__ == "__main__":

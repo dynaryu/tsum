@@ -32,9 +32,9 @@ import torch
 HERE = Path(__file__).parent
 ROOT = HERE.resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
 
-from sfun_dcopt import make_dcopt_sfun
+from dcopt import make_dcopt_sfun
 from tsum.fixed_k_search import load_tsum_inputs, run_fixed_k_pipeline
 
 
