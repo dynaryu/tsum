@@ -1,0 +1,388 @@
+DC-OPF sfun ready: 300 buses, 69 generators, 411 branches
+Loaded 515 survival rules from /scratch/w84/hxr547/tsum/demos/case300/results_surv_seed/seed_rules_surv.json
+
+Survival rule length distribution:
+  274 conditions: 2 rules
+  279 conditions: 1 rules
+  287 conditions: 1 rules
+  291 conditions: 1 rules
+  295 conditions: 2 rules
+  298 conditions: 1 rules
+  299 conditions: 2 rules
+  300 conditions: 1 rules
+  301 conditions: 1 rules
+  302 conditions: 1 rules
+  303 conditions: 2 rules
+  304 conditions: 1 rules
+  306 conditions: 2 rules
+  308 conditions: 2 rules
+  309 conditions: 1 rules
+  312 conditions: 2 rules
+  313 conditions: 5 rules
+  315 conditions: 2 rules
+  316 conditions: 2 rules
+  317 conditions: 4 rules
+  318 conditions: 1 rules
+  319 conditions: 3 rules
+  320 conditions: 2 rules
+  321 conditions: 2 rules
+  322 conditions: 5 rules
+  323 conditions: 3 rules
+  324 conditions: 2 rules
+  325 conditions: 4 rules
+  326 conditions: 3 rules
+  327 conditions: 3 rules
+  328 conditions: 1 rules
+  329 conditions: 3 rules
+  330 conditions: 7 rules
+  331 conditions: 2 rules
+  332 conditions: 4 rules
+  333 conditions: 8 rules
+  334 conditions: 6 rules
+  335 conditions: 4 rules
+  336 conditions: 7 rules
+  337 conditions: 6 rules
+  338 conditions: 6 rules
+  339 conditions: 8 rules
+  340 conditions: 3 rules
+  341 conditions: 6 rules
+  342 conditions: 5 rules
+  343 conditions: 8 rules
+  344 conditions: 7 rules
+  345 conditions: 5 rules
+  346 conditions: 10 rules
+  347 conditions: 4 rules
+  348 conditions: 9 rules
+  349 conditions: 6 rules
+  350 conditions: 3 rules
+  351 conditions: 11 rules
+  352 conditions: 2 rules
+  353 conditions: 11 rules
+  354 conditions: 10 rules
+  355 conditions: 7 rules
+  356 conditions: 12 rules
+  357 conditions: 10 rules
+  358 conditions: 4 rules
+  359 conditions: 9 rules
+  360 conditions: 8 rules
+  361 conditions: 6 rules
+  362 conditions: 9 rules
+  363 conditions: 3 rules
+  364 conditions: 7 rules
+  365 conditions: 4 rules
+  366 conditions: 5 rules
+  367 conditions: 4 rules
+  368 conditions: 5 rules
+  369 conditions: 5 rules
+  370 conditions: 4 rules
+  371 conditions: 9 rules
+  372 conditions: 2 rules
+  373 conditions: 7 rules
+  374 conditions: 9 rules
+  375 conditions: 5 rules
+  376 conditions: 2 rules
+  377 conditions: 3 rules
+  378 conditions: 8 rules
+  379 conditions: 4 rules
+  380 conditions: 7 rules
+  381 conditions: 3 rules
+  382 conditions: 8 rules
+  383 conditions: 8 rules
+  384 conditions: 9 rules
+  385 conditions: 4 rules
+  386 conditions: 6 rules
+  387 conditions: 4 rules
+  388 conditions: 5 rules
+  389 conditions: 3 rules
+  390 conditions: 3 rules
+  391 conditions: 6 rules
+  392 conditions: 3 rules
+  393 conditions: 5 rules
+  394 conditions: 1 rules
+  395 conditions: 2 rules
+  396 conditions: 5 rules
+  397 conditions: 2 rules
+  398 conditions: 3 rules
+  399 conditions: 2 rules
+  400 conditions: 1 rules
+  401 conditions: 3 rules
+  402 conditions: 2 rules
+  403 conditions: 6 rules
+  404 conditions: 4 rules
+  405 conditions: 7 rules
+  407 conditions: 1 rules
+  409 conditions: 1 rules
+  410 conditions: 2 rules
+  411 conditions: 3 rules
+  412 conditions: 1 rules
+  413 conditions: 3 rules
+  414 conditions: 2 rules
+  416 conditions: 1 rules
+  417 conditions: 2 rules
+  418 conditions: 1 rules
+  420 conditions: 2 rules
+  421 conditions: 1 rules
+  422 conditions: 1 rules
+  424 conditions: 1 rules
+  437 conditions: 1 rules
+  438 conditions: 1 rules
+  455 conditions: 1 rules
+  458 conditions: 1 rules
+
+============================================================
+Phase 3: TSUM rule extraction (seeded with 515 survival rules)
+============================================================
+  Critical components: vbus137, vbus126, vbus140, vbus231, vbus15, vbus21, vbus178, vbus188, vbus3, vbus223, vbus42, vbus127, vbus191, vbus120, vbus44, vbus145, vbus37, vbus45, vbus119, vbus225, vbus192, vbus61, br268, br309, vbus17, vbus159, vbus121, vbus157, vbus224, br181, vbus211, vbus155, vbus173, vbus122, vbus73, vbus130, br182, vbus2, vbus118, br307, vbus180, vbus62, vbus16, br367, vbus24, vbus41, vbus135, vbus234, vbus49, vbus1190, br239, vbus237, vbus117, br391, vbus71, vbus182, br176, br371, vbus5, vbus6, vbus57, vbus167, vbus74, br177, br347, vbus102, vbus232, br316, vbus133, vbus139, vbus38, br342, vbus12, vbus90, vbus99, vbus123, vbus23, vbus175, vbus184, vbus89, br59, vbus11, br386, vbus46, vbus4, br337, vbus33, br45, vbus19, vbus134, vbus79, vbus9005, br67, br90, vbus77, vbus217, vbus319, br359, vbus7, vbus136, br93, vbus72, vbus164, br351, vbus181, vbus97, vbus235, br203, vbus162, vbus55, br343, br257, vbus245, vbus215, br100, vbus128, vbus9, vbus14, br64, vbus22, br53, br317, br242, vbus7130, br61, br400, vbus1, vbus52, br205, vbus87, vbus212, br214, vbus187, vbus214, vbus59, vbus142, br115, br375, vbus60, br194, vbus40, br99, vbus161, vbus229, br373, br43, vbus47, vbus25, br66, vbus138, vbus203, vbus216, br197, vbus163, br244, vbus7003, br394, vbus129, vbus7139, br404, vbus143, br349, br374, vbus219, vbus246, br348, vbus148, br6, br40, vbus228, vbus9052, vbus172, vbus236, br388, vbus186, vbus168, vbus81, vbus94, vbus170, vbus227, vbus238, br42, br210, br196, br212, br226, vbus13, br209, vbus110, vbus105, br55, br217, vbus53, br189, vbus179, vbus54, vbus221, vbus9001, vbus154, vbus197, br65, br296, vbus220, vbus20, br292, vbus248, br204, br262, br366, br47, br86, br305, vbus125, vbus200, vbus86, vbus103, vbus241, br75, br322, vbus34, vbus43, vbus171, br294, vbus202, br211, vbus218, vbus158, br355, vbus27, vbus108, br71, vbus48, vbus198, vbus78, vbus233, br195, br364, br97, br259, br199, br384, vbus84, vbus213, br130, br293, br192, vbus58, vbus7001, br399, vbus92, vbus190, vbus562, br301, br132, vbus7002, br393, vbus141, br143, br240, vbus7061, br266, br395, br344, br321, vbus7017, br406, br224, br39, vbus107, vbus124, br137, br238, br336, br110, vbus222, br101, br107, vbus10, br287, vbus76, vbus88, vbus230, br387, br277, vbus7039, vbus153, br191, vbus39, br88, br407, vbus7057, br408, vbus196, br114, br280, br188, vbus242, vbus247, br227, vbus9051, vbus176, vbus204, br208, vbus80, br150, br187, vbus8, vbus7011, br401, vbus210, vbus9053, br200, br128, br216, vbus91, vbus132, br312, vbus146, br1, vbus7024, br398, vbus156, vbus98, br124, br261, br405, vbus26, br52, vbus165, vbus7012, vbus7023, br136, br402, vbus177, br82, vbus166, vbus7166, br243, br245, br397, br232, br345, vbus63, vbus185, br260, br2, br68, vbus69, br73, vbus152, br233, br282, vbus209, vbus609, br135, br183, vbus7049, br403, vbus201, vbus183, br275, br369, br352, br281, br46, vbus7062, br396, br72, vbus35, br142, br111, vbus85, br353, br109, vbus243, vbus7071, br411, br339, br251, vbus174, vbus9002, br325, br213, br166, br185, br250, br258, vbus195, vbus109, br383, br255, br167, br113, vbus199, br338, br324, vbus104, br141, br235, br146, br219, vbus70, br297, br218, br363, br229, br378, br125, br121, br198, br320, br108, br299, br85, vbus149, br284, br201, vbus147, vbus324, br157, br410, br129, br285, br51, br237, vbus7055, br168, br382, br385, br230, br206, br390, br60, vbus2040, br311, br148, br319, br69, br380, br409, br249, vbus526, br118, vbus244, vbus7044, br41, br328, vbus51, br332, br326, br223, br190, vbus144, br365, br381, br87, br221, br117, vbus189, br123, br341, br145, br54, vbus113, br50, br354, br78, br306, br350, vbus64, br116, br139, br119, br379, br153, vbus239, br389, br58, br104, br159, br362, br103, br158, br91, vbus150, br57, br56, br44, br252, br74, br361, br84, br106, br247, br222, br335, br164, br131, br162, vbus36, vbus208, br79, vbus112, br184, br279, br346, vbus169, br112, br304, br329, br89, br92, vbus531, br138, br172, br215, br3, br76, br83, br126, br120, br315, vbus100, br370, vbus9012, vbus9006, br193, br105, br248, br303, vbus9003, br8, vbus9054
+  Seed rules:  515 survival rules
+  Convergence: unk_prob < 1e-05
+  Device:      cpu
+  Workers:     96
+
+Starting rule extraction...
+
+Loaded 515 initial survival rules
+Parallel mode: 96 CPU workers for sfun + minimization
+---
+Round: 1, Unk. prob.: 1.000e+00
+Surv probs: 0.000e+00, Fail probs: 0.000e+00
+No. of non-dominant rules: 515, Survival rules: 515, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.065, 26.08, 26.081, 26.082, 26.084, 26.085, 26.086, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 2, Unk. prob.: 1.000e+00
+Surv probs: 1.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 611, Survival rules: 611, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.065, 26.067, 26.076, 26.077, 26.079, 26.08, 26.081, 26.082, 26.084, 26.085, 26.086, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 3, Unk. prob.: 1.000e+00
+Surv probs: 1.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 707, Survival rules: 707, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.065, 26.067, 26.07, 26.071, 26.073, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 4, Unk. prob.: 1.000e+00
+Surv probs: 0.000e+00, Fail probs: 0.000e+00
+No. of non-dominant rules: 803, Survival rules: 803, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 5, Unk. prob.: 1.000e+00
+Surv probs: 0.000e+00, Fail probs: 0.000e+00
+No. of non-dominant rules: 899, Survival rules: 899, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 6, Unk. prob.: 9.999e-01
+Surv probs: 7.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 995, Survival rules: 995, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 7, Unk. prob.: 1.000e+00
+Surv probs: 4.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1091, Survival rules: 1091, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 8, Unk. prob.: 1.000e+00
+Surv probs: 5.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1187, Survival rules: 1187, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 9, Unk. prob.: 9.999e-01
+Surv probs: 7.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1283, Survival rules: 1283, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.055, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 10, Unk. prob.: 9.999e-01
+Surv probs: 9.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1379, Survival rules: 1379, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.015, 26.055, 26.057, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 11, Unk. prob.: 9.999e-01
+Surv probs: 1.100e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 1475, Survival rules: 1475, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.015, 26.044, 26.046, 26.055, 26.057, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 12, Unk. prob.: 9.999e-01
+Surv probs: 1.200e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 1571, Survival rules: 1571, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.044, 26.046, 26.055, 26.057, 26.061, 26.062, 26.063, 26.065, 26.067, 26.068, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 13, Unk. prob.: 9.999e-01
+Surv probs: 1.100e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 1667, Survival rules: 1667, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.044, 26.046, 26.055, 26.057, 26.061, 26.062, 26.063, 26.065, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 14, Unk. prob.: 9.999e-01
+Surv probs: 6.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1763, Survival rules: 1763, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.044, 26.046, 26.055, 26.057, 26.061, 26.062, 26.063, 26.065, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 15, Unk. prob.: 9.999e-01
+Surv probs: 6.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1859, Survival rules: 1859, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.044, 26.046, 26.055, 26.056, 26.057, 26.061, 26.062, 26.063, 26.065, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 16, Unk. prob.: 9.999e-01
+Surv probs: 9.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 1955, Survival rules: 1955, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.044, 26.046, 26.051, 26.055, 26.056, 26.057, 26.061, 26.062, 26.063, 26.065, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 17, Unk. prob.: 9.999e-01
+Surv probs: 1.200e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2051, Survival rules: 2051, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.046, 26.051, 26.055, 26.056, 26.057, 26.061, 26.062, 26.063, 26.065, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 18, Unk. prob.: 9.999e-01
+Surv probs: 1.500e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2147, Survival rules: 2147, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.046, 26.051, 26.055, 26.056, 26.057, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 19, Unk. prob.: 9.999e-01
+Surv probs: 1.400e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2243, Survival rules: 2243, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.051, 26.055, 26.056, 26.057, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 20, Unk. prob.: 9.998e-01
+Surv probs: 1.700e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2339, Survival rules: 2339, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.051, 26.053, 26.055, 26.056, 26.057, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 21, Unk. prob.: 9.999e-01
+Surv probs: 1.400e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2435, Survival rules: 2435, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 22, Unk. prob.: 9.999e-01
+Surv probs: 1.400e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2531, Survival rules: 2531, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 23, Unk. prob.: 9.999e-01
+Surv probs: 9.000e-05, Fail probs: 0.000e+00
+No. of non-dominant rules: 2627, Survival rules: 2627, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 24, Unk. prob.: 9.998e-01
+Surv probs: 1.900e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2723, Survival rules: 2723, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 25, Unk. prob.: 9.998e-01
+Surv probs: 1.800e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2819, Survival rules: 2819, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 26, Unk. prob.: 9.998e-01
+Surv probs: 2.200e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 2915, Survival rules: 2915, Failure rules: 0
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1]
+---
+Round: 27, Unk. prob.: 9.998e-01
+Surv probs: 1.800e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3011, Survival rules: 3011, Failure rules: 0
+Batch update: 95 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 95 rules added, 0 removed (from 95 candidates)
+Batch update: 1 rules added, 0 existing rules removed (0 new rules dominated)
+Failure: 1 rules added, 0 removed (from 1 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 28, Unk. prob.: 9.998e-01
+Surv probs: 1.800e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3107, Survival rules: 3106, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 29, Unk. prob.: 9.998e-01
+Surv probs: 2.400e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3203, Survival rules: 3202, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 30, Unk. prob.: 9.998e-01
+Surv probs: 2.000e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3299, Survival rules: 3298, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.04, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 31, Unk. prob.: 9.998e-01
+Surv probs: 1.600e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3395, Survival rules: 3394, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.04, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 32, Unk. prob.: 9.998e-01
+Surv probs: 1.900e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3491, Survival rules: 3490, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.04, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 33, Unk. prob.: 9.998e-01
+Surv probs: 2.200e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3587, Survival rules: 3586, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.04, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 34, Unk. prob.: 9.998e-01
+Surv probs: 1.600e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3683, Survival rules: 3682, Failure rules: 1
+Batch update: 96 rules added, 0 existing rules removed (0 new rules dominated)
+Survival: 96 rules added, 0 removed (from 96 candidates)
+Updated sys_vals: [26.011, 26.015, 26.038, 26.04, 26.044, 26.045, 26.046, 26.047, 26.05, 26.051, 26.053, 26.054, 26.055, 26.056, 26.057, 26.059, 26.061, 26.062, 26.063, 26.065, 26.066, 26.067, 26.068, 26.069, 26.07, 26.071, 26.072, 26.073, 26.074, 26.075, 26.076, 26.077, 26.078, 26.079, 26.08, 26.081, 26.082, 26.083, 26.084, 26.085, 26.086, 26.087, 26.088, 26.089, 26.09, 26.091, 26.092, 26.093, 26.094, 26.095, 26.096, 26.097, 26.098, 26.099, 26.1, 26.107]
+---
+Round: 35, Unk. prob.: 9.998e-01
+Surv probs: 2.100e-04, Fail probs: 0.000e+00
+No. of non-dominant rules: 3779, Survival rules: 3778, Failure rules: 1
