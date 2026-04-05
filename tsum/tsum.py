@@ -1970,6 +1970,7 @@ def run_rule_extraction_by_mcs(
     classifier_retrain_every: int = 10,  # retrain classifier every N rounds
     classifier_shift_factor: float = 3.0,  # IS shift aggressiveness
     classifier_mix_original: float = 0.3,  # fraction of original distribution to mix in
+    classifier_seed_rules: Optional[List[Dict]] = None,  # failure rules to seed the classifier (from k-fixed search)
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2075,6 +2076,8 @@ def run_rule_extraction_by_mcs(
             shift_factor=classifier_shift_factor,
             mix_original=classifier_mix_original,
         )
+        if classifier_seed_rules:
+            _boundary_guide.seed_from_failure_rules(classifier_seed_rules)
         print(f"Classifier-guided mode: pre-training on {classifier_n_pretrain} samples...")
         _boundary_guide.pretrain(n_samples=classifier_n_pretrain, n_workers=n_workers)
 

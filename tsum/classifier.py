@@ -428,6 +428,37 @@ class BoundaryGuide:
             self._y_data.append(int(y[i]))
         self._needs_retrain = True
 
+    def seed_from_failure_rules(self, failure_rules: List[Dict]):
+        """
+        Seed classifier with observations derived from known failure rules.
+
+        Each rule is a dict mapping component names to [op, state] pairs
+        (e.g. {"vbus59": ["<=", 0], "sys": ["<=", 0]}).  For each rule,
+        generates synthetic failure observations where the rule's components
+        are set to their failed states and all other components are fully
+        operational.
+
+        This bootstraps the failure class for the classifier, solving the
+        cold-start problem when failures are extremely rare.
+        """
+        n_seeded = 0
+        for rule in failure_rules:
+            # Start with all components at max (operational) state
+            comps_st = {n: (self.n_state - 1) for n in self.row_names}
+            for comp, condition in rule.items():
+                if comp == "sys" or comp not in comps_st:
+                    continue
+                # condition is [op, state] e.g. ["<=", 0]
+                if isinstance(condition, (list, tuple)) and len(condition) == 2:
+                    comps_st[comp] = int(condition[1])
+                else:
+                    comps_st[comp] = int(condition)
+            self.add_observation(comps_st, sys_st=0)
+            n_seeded += 1
+
+        if n_seeded > 0:
+            print(f"  BoundaryGuide seeded with {n_seeded} failure rules")
+
     def pretrain(self, n_samples: int = 5000, n_workers: int = 1):
         """
         Generate initial training data by random sampling + sfun evaluation,

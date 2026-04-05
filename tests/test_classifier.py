@@ -300,6 +300,57 @@ class TestBoundaryGuide:
         guide.retrain()
         assert guide.fitted
 
+    def test_seed_from_failure_rules(self):
+        """Seeding with failure rules should add failure observations."""
+        n_vars = 4
+        n_state = 2
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        row_names = list(probs_dict.keys())
+        sfun = _make_sum_sfun(threshold=3)
+
+        guide = BoundaryGuide(n_vars, n_state, probs_t, row_names, sfun)
+
+        # Seed with failure rules in the format from k-fixed search
+        seed_rules = [
+            {"x0": ["<=", 0], "x1": ["<=", 0], "sys": ["<=", 0]},
+            {"x2": ["<=", 0], "x3": ["<=", 0], "sys": ["<=", 0]},
+        ]
+        guide.seed_from_failure_rules(seed_rules)
+
+        assert guide.n_observations == 2
+        assert guide.n_failures == 2
+
+        # The seeded observations should have correct values
+        # Rule 1: x0=0, x1=0, x2=1(max), x3=1(max)
+        np.testing.assert_array_equal(guide._X_data[0], [0, 0, 1, 1])
+        # Rule 2: x0=1(max), x1=1(max), x2=0, x3=0
+        np.testing.assert_array_equal(guide._X_data[1], [1, 1, 0, 0])
+
+    def test_seed_then_pretrain_enables_fitting(self):
+        """Seeding + pretrain should give enough failure signal to fit."""
+        n_vars = 4
+        n_state = 2
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        row_names = list(probs_dict.keys())
+        sfun = _make_sum_sfun(threshold=1)  # very rare failure
+
+        guide = BoundaryGuide(n_vars, n_state, probs_t, row_names, sfun)
+
+        # Seed with failure rules to ensure at least 2 failure observations
+        seed_rules = [
+            {"x0": ["<=", 0], "x1": ["<=", 0], "sys": ["<=", 0]},
+            {"x2": ["<=", 0], "x3": ["<=", 0], "sys": ["<=", 0]},
+        ]
+        guide.seed_from_failure_rules(seed_rules)
+        guide.pretrain(n_samples=100)
+
+        # With seeds, classifier should be fitted even if random pretrain
+        # finds no failures
+        assert guide.fitted
+        assert guide.n_failures >= 2
+
     def test_unfitted_falls_back_to_original(self):
         """Before training, generate_candidates should use original distribution."""
         n_vars = 3

@@ -60,6 +60,8 @@ def parse_args():
                         help="IS shift aggressiveness for boundary sampling (default: 3.0)")
     parser.add_argument("--classifier-mix-original", type=float, default=0.3,
                         help="Fraction of original distribution to mix in (default: 0.3)")
+    parser.add_argument("--seed-rules", type=str, default="",
+                        help="Path to JSON file with failure rules to seed the classifier (from k-fixed search)")
     parser.add_argument("--output-dir", type=str, default="results_classifier",
                         help="Output directory (default: results_classifier)")
     return parser.parse_args()
@@ -135,6 +137,16 @@ def main():
     # ---------------------------------------------------------------
     # 4. Run classifier-guided rule extraction
     # ---------------------------------------------------------------
+    # Load seed failure rules if provided
+    seed_rules = None
+    if args.seed_rules:
+        seed_path = Path(args.seed_rules)
+        if not seed_path.is_absolute():
+            seed_path = HERE / seed_path
+        with open(seed_path) as f:
+            seed_rules = json.load(f)
+        print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
+
     output_dir = HERE / args.output_dir
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     {args.n_sample:,} per round (batch {args.sample_batch_size:,})")
@@ -165,6 +177,7 @@ def main():
         classifier_retrain_every=args.classifier_retrain_every,
         classifier_shift_factor=args.classifier_shift_factor,
         classifier_mix_original=args.classifier_mix_original,
+        classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
