@@ -1,28 +1,19 @@
 """
-Monotone classifier for system reliability estimation via importance sampling.
+Monotone classifier for guided boundary search in TSUM rule extraction.
 
-Instead of enumerating reference states (which cover negligible probability in
-high dimensions), this module:
-
-1. Trains a monotone classifier f(x) ~ Phi(x) from (component-state, system-state)
-   samples obtained by evaluating the true system function.
-2. Uses the classifier to design an importance sampling distribution that
-   concentrates samples in the failure region.
-3. Estimates P(failure) via importance sampling with the TRUE system function,
-   giving an unbiased estimate regardless of classifier accuracy.
+Provides a monotone gradient-boosted tree classifier that learns the
+survival/failure boundary from system function evaluations.  Used within
+``run_rule_extraction_by_mcs`` to bias sampling toward the decision boundary
+where "unknown" states (not yet covered by any rule) are concentrated.
 
 The classifier respects coherence (monotonicity): improving any component never
-worsens the system.  This is enforced via monotone_constraints in the gradient-
-boosted tree model.
+worsens the system.  This is enforced via monotone_constraints in the
+gradient-boosted tree model.
 """
 
-import time
-import json
-import os
 import numpy as np
 import torch
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional
 
 
 # ── Model wrapper ─────────────────────────────────────────────────────────────
@@ -35,7 +26,7 @@ class MonotoneClassifier:
     all features get monotone_constraints = +1.
 
     Features are integer component-state indices (compact, not one-hot).
-    Target is binary: 0 = failure (S <= threshold), 1 = survival (S > threshold).
+    Target is binary: 0 = failure, 1 = survival.
     """
 
     def __init__(self, n_vars: int, n_state: int):
@@ -45,19 +36,9 @@ class MonotoneClassifier:
         self._fitted = False
 
     def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> "MonotoneClassifier":
-        """
-        Train the classifier.
-
-        Args:
-            X: (n_samples, n_vars) integer component-state indices
-            y: (n_samples,) binary labels: 0 = failure, 1 = survival
-        """
         from sklearn.ensemble import HistGradientBoostingClassifier
 
-        # All features are monotone increasing for a coherent system:
-        # higher state index => better component => system at least as good
         mono = [1] * self.n_vars
-
         default_min_leaf = min(20, max(1, len(X) // 4))
         self._clf = HistGradientBoostingClassifier(
             max_iter=kwargs.get("max_iter", 200),
@@ -92,7 +73,7 @@ class MonotoneClassifier:
         return self._clf.score(X, y)
 
 
-# ── Data generation ───────────────────────────────────────────────────────────
+# ── Sampling helpers ─────────────────────────────────────────────────────────
 
 def sample_component_states(
     probs_dict: Dict[str, Dict],
@@ -112,7 +93,6 @@ def sample_component_states(
     for i, name in enumerate(row_names):
         p = probs_dict[name]
         probs = [p[str(s)]["p"] if str(s) in p else 0.0 for s in range(n_state)]
-        # Normalize (handles padding for components with fewer states)
         total = sum(probs)
         if total > 0:
             probs = [pp / total for pp in probs]
@@ -120,13 +100,21 @@ def sample_component_states(
     return X
 
 
+def _indices_to_onehot(X_int: np.ndarray, n_state: int,
+                       device: torch.device) -> torch.Tensor:
+    """Convert (n_samples, n_vars) int indices to (n_samples, n_vars, n_state) one-hot."""
+    X_t = torch.from_numpy(X_int).long().to(device)
+    return torch.nn.functional.one_hot(X_t, num_classes=n_state).int()
+
+
+# ── sfun evaluation (multiprocessing-safe) ───────────────────────────────────
+
 _worker_sfun = None
 _worker_X = None
 _worker_row_names = None
 
 
 def _worker_init(sfun, X, row_names):
-    """Initializer for Pool workers — stores unpicklable objects as globals."""
     global _worker_sfun, _worker_X, _worker_row_names
     _worker_sfun = sfun
     _worker_X = X
@@ -134,7 +122,6 @@ def _worker_init(sfun, X, row_names):
 
 
 def _worker_eval(i):
-    """Evaluate sfun for sample i using worker-global state."""
     comps_st = {_worker_row_names[k]: int(_worker_X[i, k])
                 for k in range(len(_worker_row_names))}
     _, sys_st, _ = _worker_sfun(comps_st)
@@ -149,12 +136,6 @@ def evaluate_sfun_batch(
 ) -> np.ndarray:
     """
     Evaluate the system function for a batch of component-state vectors.
-
-    Args:
-        X: (n_samples, n_vars) integer component-state indices
-        sfun: system function callable
-        row_names: component names
-        n_workers: number of parallel workers
 
     Returns:
         y: (n_samples,) integer system states
@@ -177,109 +158,7 @@ def evaluate_sfun_batch(
         return y
 
 
-# ── Importance sampling ───────────────────────────────────────────────────────
-
-def build_is_distribution(
-    probs_dict: Dict[str, Dict],
-    row_names: List[str],
-    n_state: int,
-    classifier: MonotoneClassifier,
-    *,
-    n_pilot: int = 100_000,
-    shift_factor: float = 2.0,
-    rng: np.random.Generator,
-) -> List[List[float]]:
-    """
-    Build an importance sampling distribution that concentrates mass on the
-    failure region, guided by the classifier.
-
-    Strategy: for components the classifier deems important for failure,
-    shift probability mass toward degraded states.  The shift is proportional
-    to the classifier's feature importance (split-count based).
-
-    Args:
-        probs_dict: original component probabilities
-        row_names: component names
-        n_state: max number of states
-        classifier: trained MonotoneClassifier
-        n_pilot: number of pilot samples for calibration
-        shift_factor: controls aggressiveness of the shift (higher = more bias)
-        rng: numpy random generator
-
-    Returns:
-        is_probs: list of per-component probability vectors for IS
-    """
-    n_vars = len(row_names)
-
-    # Get feature importance from the classifier
-    importance = np.zeros(n_vars)
-    if classifier._fitted and hasattr(classifier._clf, '_predictors'):
-        for predictors_at_iter in classifier._clf._predictors:
-            for predictor in predictors_at_iter:
-                nodes = predictor.nodes
-                if hasattr(nodes, 'dtype') and 'feature_idx' in nodes.dtype.names:
-                    for node in nodes:
-                        is_leaf = bool(node['is_leaf']) if 'is_leaf' in nodes.dtype.names else False
-                        if not is_leaf:
-                            fi = int(node['feature_idx'])
-                            if 0 <= fi < n_vars:
-                                importance[fi] += 1
-        total = importance.sum()
-        if total > 0:
-            importance /= total
-
-    # Build shifted distributions: for important components, shift mass
-    # toward lower (degraded) states
-    is_probs = []
-    for i, name in enumerate(row_names):
-        p = probs_dict[name]
-        orig = np.array([p[str(s)]["p"] if str(s) in p else 0.0
-                         for s in range(n_state)], dtype=np.float64)
-        total = orig.sum()
-        if total > 0:
-            orig /= total
-
-        # Shift factor scales with component importance.
-        # When importance is all zeros (no failures seen), apply uniform shift
-        # so IS still explores the failure region.
-        if importance.max() > 0:
-            comp_shift = shift_factor * (importance[i] / importance.max())
-        else:
-            comp_shift = shift_factor
-
-        # Apply shift: multiply P(state=s) by exp(comp_shift * (max_state - s))
-        # This increases probability of lower (worse) states
-        max_s = len(p) - 1
-        weights = np.array([np.exp(comp_shift * (max_s - s)) for s in range(n_state)])
-        shifted = orig * weights
-        shifted_sum = shifted.sum()
-        if shifted_sum > 0:
-            shifted /= shifted_sum
-        else:
-            shifted = orig.copy()
-
-        # Ensure no zero probabilities (for IS weight computation)
-        shifted = np.clip(shifted, 1e-10, None)
-        shifted /= shifted.sum()
-
-        is_probs.append(shifted.tolist())
-
-    return is_probs
-
-
-def sample_is(
-    is_probs: List[List[float]],
-    n_samples: int,
-    n_state: int,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """Sample from the importance sampling distribution."""
-    n_vars = len(is_probs)
-    X = np.empty((n_samples, n_vars), dtype=np.int32)
-    for i in range(n_vars):
-        X[:, i] = rng.choice(n_state, size=n_samples, p=is_probs[i])
-    return X
-
+# ── IS weight computation ────────────────────────────────────────────────────
 
 def compute_is_weights(
     X: np.ndarray,
@@ -291,17 +170,11 @@ def compute_is_weights(
     """
     Compute importance sampling likelihood ratios: w(x) = p(x) / q(x).
 
-    Args:
-        X: (n_samples, n_vars) sampled component states
-        probs_dict: original probabilities p
-        is_probs: IS probabilities q
-
     Returns:
         weights: (n_samples,) likelihood ratios
     """
     n_samples, n_vars = X.shape
 
-    # Precompute original probs as array
     orig_probs = np.empty((n_vars, n_state), dtype=np.float64)
     for i, name in enumerate(row_names):
         p = probs_dict[name]
@@ -311,9 +184,8 @@ def compute_is_weights(
         if total > 0:
             orig_probs[i] /= total
 
-    is_arr = np.array(is_probs, dtype=np.float64)  # (n_vars, n_state)
+    is_arr = np.array(is_probs, dtype=np.float64)
 
-    # Compute log-likelihood ratios for numerical stability
     log_weights = np.zeros(n_samples, dtype=np.float64)
     for j in range(n_vars):
         states_j = X[:, j]
@@ -324,7 +196,127 @@ def compute_is_weights(
     return np.exp(log_weights)
 
 
-# ── Active learning ───────────────────────────────────────────────────────────
+# ── Boundary-guided sampling for TSUM integration ───────────────────────────
+
+def build_boundary_distribution(
+    probs: torch.Tensor,
+    classifier: MonotoneClassifier,
+    *,
+    shift_factor: float = 3.0,
+    mix_original: float = 0.3,
+    rng: np.random.Generator,
+) -> torch.Tensor:
+    """
+    Build a sampling distribution that concentrates near the classifier's
+    decision boundary (where unknowns are most likely).
+
+    For components the classifier deems important for the survival/failure
+    split, shifts probability mass toward degraded states (increasing the
+    chance of sampling near the boundary from the survival side).
+
+    Args:
+        probs: (n_vars, n_state) original component probabilities (torch)
+        classifier: trained MonotoneClassifier
+        shift_factor: aggressiveness of the shift toward degraded states
+        mix_original: fraction of original distribution to mix in (exploration)
+        rng: numpy random generator
+
+    Returns:
+        boundary_probs: (n_vars, n_state) shifted probability tensor
+    """
+    n_vars, n_state = probs.shape
+    orig = probs.cpu().numpy().astype(np.float64)
+
+    # Extract feature importance from classifier
+    importance = np.zeros(n_vars)
+    if classifier._fitted and hasattr(classifier._clf, '_predictors'):
+        for predictors_at_iter in classifier._clf._predictors:
+            for predictor in predictors_at_iter:
+                nodes = predictor.nodes
+                if hasattr(nodes, 'dtype') and 'feature_idx' in nodes.dtype.names:
+                    for node in nodes:
+                        is_leaf = (bool(node['is_leaf'])
+                                   if 'is_leaf' in nodes.dtype.names else False)
+                        if not is_leaf:
+                            fi = int(node['feature_idx'])
+                            if 0 <= fi < n_vars:
+                                importance[fi] += 1
+        total = importance.sum()
+        if total > 0:
+            importance /= total
+
+    shifted = np.empty_like(orig)
+    for i in range(n_vars):
+        row = orig[i].copy()
+        row_sum = row.sum()
+        if row_sum > 0:
+            row /= row_sum
+
+        # When importance is all zeros (no failures seen / unfitted),
+        # apply uniform shift so sampling still explores degraded states.
+        if importance.max() > 0:
+            comp_shift = shift_factor * (importance[i] / importance.max())
+        else:
+            comp_shift = shift_factor
+
+        # Shift mass toward lower (degraded) states
+        n_active = int((row > 0).sum())
+        max_s = max(n_active - 1, 0)
+        weights = np.array([np.exp(comp_shift * (max_s - s))
+                            for s in range(n_state)])
+        row_shifted = row * weights
+        row_sum = row_shifted.sum()
+        if row_sum > 0:
+            row_shifted /= row_sum
+        else:
+            row_shifted = row.copy()
+
+        # Mix with original for exploration
+        shifted[i] = (1.0 - mix_original) * row_shifted + mix_original * row
+
+        # Ensure no zero probabilities where original is nonzero
+        shifted[i] = np.clip(shifted[i], 1e-10, None)
+        shifted[i] /= shifted[i].sum()
+
+    return torch.tensor(shifted, dtype=probs.dtype, device=probs.device)
+
+
+def sample_boundary_candidates(
+    probs: torch.Tensor,
+    classifier: MonotoneClassifier,
+    n_samples: int,
+    *,
+    shift_factor: float = 3.0,
+    mix_original: float = 0.3,
+    rng: np.random.Generator,
+    boundary_probs: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Generate one-hot encoded samples biased toward the classifier's decision
+    boundary.  Drop-in replacement for ``sample_categorical`` in TSUM's
+    search phase.
+
+    Args:
+        probs: (n_vars, n_state) original component probabilities
+        classifier: trained MonotoneClassifier
+        n_samples: number of samples to generate
+        shift_factor: IS shift aggressiveness
+        mix_original: fraction of original distribution to preserve
+        rng: numpy random generator
+        boundary_probs: pre-computed shifted distribution (avoids rebuilding)
+
+    Returns:
+        samples: (n_samples, n_vars, n_state) one-hot encoded, same device as probs
+    """
+    from tsum.tsum import sample_categorical
+
+    if boundary_probs is None:
+        boundary_probs = build_boundary_distribution(
+            probs, classifier,
+            shift_factor=shift_factor, mix_original=mix_original, rng=rng)
+
+    return sample_categorical(boundary_probs, n_samples)
+
 
 def select_active_samples(
     probs_dict: Dict[str, Dict],
@@ -338,18 +330,12 @@ def select_active_samples(
     """
     Select samples near the classifier's decision boundary for active learning.
 
-    Samples where P(failure) ~ 0.5 are most informative for refining the
-    boundary.  We also include some samples biased toward degradation to
-    explore the failure region.
-
     Returns:
         X_selected: (n_select, n_vars) component-state vectors to evaluate
     """
-    # Generate candidates from the original distribution
     X_cand = sample_component_states(
         probs_dict, row_names, n_candidates, n_state, rng)
 
-    # Score with classifier
     p_fail = classifier.predict_proba_failure(X_cand)
 
     # Uncertainty = closeness to 0.5
@@ -358,272 +344,146 @@ def select_active_samples(
     # Also weight by failure probability to explore failure region
     score = uncertainty + 0.5 * p_fail
 
-    # Select top-scoring candidates
     n_select = min(n_select, len(X_cand))
     top_idx = np.argsort(score)[-n_select:]
     return X_cand[top_idx]
 
 
-# ── Main estimation pipeline ──────────────────────────────────────────────────
+# ── Integration: BoundaryGuide for use inside run_rule_extraction_by_mcs ────
 
-@dataclass
-class EstimationResult:
-    """Result of the classifier-based probability estimation."""
-    p_failure: float = 0.0
-    p_failure_se: float = 0.0             # standard error
-    p_failure_ci_lower: float = 0.0       # 95% CI
-    p_failure_ci_upper: float = 0.0
-    n_is_samples: int = 0
-    n_training_samples: int = 0
-    n_failures_observed: int = 0
-    classifier_accuracy: float = 0.0
-    rounds: List[Dict[str, Any]] = field(default_factory=list)
-
-
-def estimate_failure_probability(
-    sfun: Callable,
-    probs_dict: Dict[str, Dict],
-    row_names: List[str],
-    n_state: int,
-    *,
-    # Training
-    n_initial_samples: int = 5_000,
-    n_active_rounds: int = 5,
-    n_active_samples_per_round: int = 2_000,
-    n_active_candidates: int = 50_000,
-    # Importance sampling
-    n_is_samples: int = 100_000,
-    is_shift_factor: float = 3.0,
-    # Computation
-    n_workers: int = 1,
-    seed: int = 42,
-    # Output
-    output_dir: Optional[str] = None,
-    verbose: bool = True,
-) -> EstimationResult:
+class BoundaryGuide:
     """
-    Estimate P(failure) using a monotone classifier and importance sampling.
+    Manages classifier training and boundary-guided sampling within the
+    TSUM rule extraction loop.
 
-    Pipeline:
-        1. Generate initial training data by sampling from component distribution
-           and evaluating the true system function.
-        2. Train monotone classifier.
-        3. Active learning: iteratively select boundary samples, evaluate,
-           retrain.
-        4. Build importance sampling distribution from trained classifier.
-        5. Draw IS samples, evaluate true Phi, compute unbiased estimate.
+    Usage inside ``run_rule_extraction_by_mcs``::
 
-    Args:
-        sfun: system function (comps_st -> (fval, sys_st, info))
-        probs_dict: component probability distributions
-        row_names: component names
-        n_state: max states per component
-        n_initial_samples: initial training set size
-        n_active_rounds: number of active learning rounds
-        n_active_samples_per_round: samples to evaluate per active round
-        n_active_candidates: candidates to score for active selection
-        n_is_samples: importance sampling samples for final estimate
-        is_shift_factor: aggressiveness of IS distribution shift
-        n_workers: parallel workers for sfun evaluation
-        seed: random seed
-        output_dir: directory to save results (None = don't save)
-        verbose: print progress
+        guide = BoundaryGuide(n_vars, n_state, probs, row_names, sfun)
 
-    Returns:
-        EstimationResult with P(failure) estimate and confidence interval
+        # Phase 0 (optional): pre-train on initial random sfun evaluations
+        guide.pretrain(n_samples=5000, n_workers=4)
+
+        # In the search loop, replace sample_categorical:
+        samples = guide.generate_candidates(batch_size)
+
+        # After minimization produces (comps_st, sys_st), feed back:
+        guide.add_observation(comps_st, sys_st)
+
+        # Periodically retrain (e.g. every N rounds):
+        guide.retrain()
     """
-    rng = np.random.default_rng(seed)
-    n_vars = len(row_names)
-    result = EstimationResult()
 
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    def __init__(
+        self,
+        n_vars: int,
+        n_state: int,
+        probs: torch.Tensor,
+        row_names: List[str],
+        sfun: Callable,
+        *,
+        shift_factor: float = 3.0,
+        mix_original: float = 0.3,
+        seed: int = 42,
+    ):
+        self.n_vars = n_vars
+        self.n_state = n_state
+        # Ensure probs are on the same device TSUM uses for rules
+        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.probs = probs.to(self._device)
+        self.row_names = row_names
+        self.sfun = sfun
+        self.shift_factor = shift_factor
+        self.mix_original = mix_original
+        self.rng = np.random.default_rng(seed)
 
-    def _log(msg):
-        if verbose:
-            print(msg, flush=True)
+        self.classifier = MonotoneClassifier(n_vars, n_state)
+        self._X_data: List[np.ndarray] = []
+        self._y_data: List[int] = []
+        self._boundary_probs: Optional[torch.Tensor] = None
+        self._needs_retrain = False
 
-    # ── Phase 1: Initial training data ────────────────────────────────────
-    _log(f"\n{'='*60}")
-    _log(f"Phase 1: Generate initial training data ({n_initial_samples} samples)")
-    _log(f"{'='*60}")
+    @property
+    def n_observations(self) -> int:
+        return len(self._y_data)
 
-    t0 = time.time()
-    X_train = sample_component_states(
-        probs_dict, row_names, n_initial_samples, n_state, rng)
-    y_train = evaluate_sfun_batch(X_train, sfun, row_names, n_workers)
-    y_binary = (y_train < 1).astype(np.int32)  # 0=survival, remap: 0=failure
-    # Correct: y_binary[i] = 1 if system failed (sys_st < 1), 0 if survived
-    # Actually: sfun returns sys_st=0 for failure, sys_st=1 for survival
-    # We want: label 0 = failure, label 1 = survival
-    y_binary = y_train.copy()  # sys_st directly: 0=failure, 1=survival
+    @property
+    def n_failures(self) -> int:
+        return sum(1 for y in self._y_data if y == 0)
 
-    n_fail_init = int((y_binary == 0).sum())
-    elapsed = time.time() - t0
-    _log(f"  Time: {elapsed:.1f}s")
-    _log(f"  Failures found: {n_fail_init}/{n_initial_samples} "
-         f"({n_fail_init/n_initial_samples:.4%})")
+    @property
+    def fitted(self) -> bool:
+        return self.classifier._fitted
 
-    result.rounds.append({
-        "phase": "initial",
-        "n_samples": n_initial_samples,
-        "n_failures": n_fail_init,
-        "time_sec": elapsed,
-    })
+    def add_observation(self, comps_st: Dict[str, int], sys_st: int):
+        """Record an sfun evaluation result for classifier training."""
+        x = np.array([comps_st.get(n, 0) for n in self.row_names], dtype=np.int32)
+        self._X_data.append(x)
+        self._y_data.append(int(sys_st))
+        self._needs_retrain = True
 
-    # ── Phase 2: Train classifier ─────────────────────────────────────────
-    _log(f"\n{'='*60}")
-    _log(f"Phase 2: Train monotone classifier")
-    _log(f"{'='*60}")
+    def add_observations_batch(self, X: np.ndarray, y: np.ndarray):
+        """Record a batch of sfun evaluations."""
+        for i in range(len(y)):
+            self._X_data.append(X[i])
+            self._y_data.append(int(y[i]))
+        self._needs_retrain = True
 
-    classifier = MonotoneClassifier(n_vars, n_state)
+    def pretrain(self, n_samples: int = 5000, n_workers: int = 1):
+        """
+        Generate initial training data by random sampling + sfun evaluation,
+        then train the classifier.
+        """
+        probs_dict = {}
+        for i, name in enumerate(self.row_names):
+            p_row = self.probs[i].cpu().numpy()
+            probs_dict[name] = {str(s): {"p": float(p_row[s])}
+                                for s in range(self.n_state) if p_row[s] > 0}
 
-    t0 = time.time()
-    classifier.fit(X_train, y_binary)
-    elapsed = time.time() - t0
+        X = sample_component_states(
+            probs_dict, self.row_names, n_samples, self.n_state, self.rng)
+        y = evaluate_sfun_batch(X, self.sfun, self.row_names, n_workers)
+        self.add_observations_batch(X, y)
+        self.retrain()
 
-    acc = classifier.score(X_train, y_binary)
-    _log(f"  Training accuracy: {acc:.4f}")
-    _log(f"  Training time: {elapsed:.1f}s")
-    result.classifier_accuracy = acc
+        n_fail = int((y == 0).sum())
+        print(f"  BoundaryGuide pretrained: {n_samples} samples, "
+              f"{n_fail} failures, accuracy={self.classifier.score(X, y):.4f}")
 
-    # ── Phase 3: Active learning ──────────────────────────────────────────
-    _log(f"\n{'='*60}")
-    _log(f"Phase 3: Active learning ({n_active_rounds} rounds)")
-    _log(f"{'='*60}")
+    def retrain(self):
+        """Retrain classifier on all accumulated observations."""
+        if len(self._y_data) < 4:
+            return
+        X = np.array(self._X_data, dtype=np.int32)
+        y = np.array(self._y_data, dtype=np.int32)
 
-    total_active_samples = 0
-    for r in range(n_active_rounds):
-        t0 = time.time()
+        # Need both classes to train a meaningful classifier
+        if len(np.unique(y)) < 2:
+            self._needs_retrain = False
+            return
 
-        # Select informative samples near the boundary
-        X_active = select_active_samples(
-            probs_dict, row_names, n_state, classifier,
-            n_candidates=n_active_candidates,
-            n_select=n_active_samples_per_round,
-            rng=rng,
-        )
+        self.classifier.fit(X, y)
+        self._boundary_probs = None  # invalidate cached distribution
+        self._needs_retrain = False
 
-        # Evaluate true system function
-        y_active = evaluate_sfun_batch(X_active, sfun, row_names, n_workers)
+    def generate_candidates(self, n_samples: int) -> torch.Tensor:
+        """
+        Generate one-hot samples biased toward the decision boundary.
 
-        # Add to training set and retrain
-        X_train = np.concatenate([X_train, X_active], axis=0)
-        y_binary = np.concatenate([y_binary, y_active], axis=0)
+        Falls back to ``sample_categorical(probs)`` when classifier is unfitted.
 
-        classifier.fit(X_train, y_binary)
-        acc = classifier.score(X_train, y_binary)
+        Returns:
+            samples: (n_samples, n_vars, n_state) one-hot tensor
+        """
+        from tsum.tsum import sample_categorical
 
-        n_fail_active = int((y_active == 0).sum())
-        total_active_samples += len(X_active)
-        elapsed = time.time() - t0
+        if not self.classifier._fitted:
+            return sample_categorical(self.probs, n_samples)
 
-        _log(f"  Round {r+1}/{n_active_rounds}: "
-             f"+{len(X_active)} samples ({n_fail_active} failures), "
-             f"accuracy={acc:.4f}, time={elapsed:.1f}s")
+        if self._boundary_probs is None:
+            self._boundary_probs = build_boundary_distribution(
+                self.probs, self.classifier,
+                shift_factor=self.shift_factor,
+                mix_original=self.mix_original,
+                rng=self.rng)
 
-        result.rounds.append({
-            "phase": "active",
-            "round": r + 1,
-            "n_samples": len(X_active),
-            "n_failures": n_fail_active,
-            "accuracy": acc,
-            "time_sec": elapsed,
-        })
-
-    total_training = n_initial_samples + total_active_samples
-    total_failures = int((y_binary == 0).sum())
-    result.n_training_samples = total_training
-    result.classifier_accuracy = acc
-    _log(f"\n  Total training: {total_training} samples, "
-         f"{total_failures} failures ({total_failures/total_training:.4%})")
-
-    # ── Phase 4: Importance sampling ──────────────────────────────────────
-    _log(f"\n{'='*60}")
-    _log(f"Phase 4: Importance sampling ({n_is_samples} samples)")
-    _log(f"{'='*60}")
-
-    t0 = time.time()
-
-    # Build IS distribution
-    is_probs = build_is_distribution(
-        probs_dict, row_names, n_state, classifier,
-        shift_factor=is_shift_factor, rng=rng,
-    )
-
-    # Sample from IS distribution
-    X_is = sample_is(is_probs, n_is_samples, n_state, rng)
-
-    # Evaluate TRUE system function (this is what makes the estimate unbiased)
-    _log(f"  Evaluating {n_is_samples} IS samples with true system function...")
-    y_is = evaluate_sfun_batch(X_is, sfun, row_names, n_workers)
-
-    # Compute IS weights
-    weights = compute_is_weights(X_is, probs_dict, is_probs, row_names, n_state)
-
-    # Estimate P(failure) = E_q[w(x) * I(failure)]
-    failure_indicator = (y_is == 0).astype(np.float64)
-    weighted_failures = weights * failure_indicator
-
-    p_fail_is = weighted_failures.mean()
-    n_eff = (weights.sum() ** 2) / (weights ** 2).sum()
-
-    # Standard error via CLT
-    if n_is_samples > 1:
-        se = np.sqrt(np.var(weighted_failures, ddof=1) / n_is_samples)
-    else:
-        se = float('inf')
-
-    elapsed = time.time() - t0
-
-    n_is_failures = int(failure_indicator.sum())
-    _log(f"  IS failures observed: {n_is_failures}/{n_is_samples}")
-    _log(f"  Effective sample size: {n_eff:.0f}")
-    _log(f"  Time: {elapsed:.1f}s")
-
-    result.p_failure = float(p_fail_is)
-    result.p_failure_se = float(se)
-    result.p_failure_ci_lower = float(max(0, p_fail_is - 1.96 * se))
-    result.p_failure_ci_upper = float(p_fail_is + 1.96 * se)
-    result.n_is_samples = n_is_samples
-    result.n_failures_observed = n_is_failures
-    result.rounds.append({
-        "phase": "importance_sampling",
-        "n_samples": n_is_samples,
-        "n_failures": n_is_failures,
-        "n_eff": float(n_eff),
-        "p_failure": float(p_fail_is),
-        "se": float(se),
-        "time_sec": elapsed,
-    })
-
-    # ── Summary ───────────────────────────────────────────────────────────
-    total_sfun_calls = total_training + n_is_samples
-    _log(f"\n{'='*60}")
-    _log(f"Results")
-    _log(f"{'='*60}")
-    _log(f"  P(failure)  = {p_fail_is:.6e}")
-    _log(f"  SE          = {se:.6e}")
-    _log(f"  95% CI      = [{result.p_failure_ci_lower:.6e}, "
-         f"{result.p_failure_ci_upper:.6e}]")
-    _log(f"  Total sfun calls: {total_sfun_calls}")
-    _log(f"  Classifier accuracy: {result.classifier_accuracy:.4f}")
-
-    # ── Save ──────────────────────────────────────────────────────────────
-    if output_dir:
-        out = {
-            "p_failure": result.p_failure,
-            "p_failure_se": result.p_failure_se,
-            "p_failure_ci_lower": result.p_failure_ci_lower,
-            "p_failure_ci_upper": result.p_failure_ci_upper,
-            "n_is_samples": result.n_is_samples,
-            "n_training_samples": result.n_training_samples,
-            "n_failures_observed": result.n_failures_observed,
-            "classifier_accuracy": result.classifier_accuracy,
-            "rounds": result.rounds,
-        }
-        with open(os.path.join(output_dir, "results.json"), "w") as f:
-            json.dump(out, f, indent=2)
-        _log(f"\n  Results saved to {output_dir}/results.json")
-
-    return result
+        return sample_categorical(self._boundary_probs, n_samples)

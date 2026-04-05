@@ -1964,6 +1964,12 @@ def run_rule_extraction_by_mcs(
     max_search_loops: int = 0,  # max batches per round for searching unknowns (0 = use n_sample // sample_batch_size)
     min_rule_search: bool = True,
     rule_update_verbose: bool = True,
+    # Classifier-guided boundary search
+    classifier_guided: bool = False,  # use monotone classifier to guide sampling toward boundary
+    classifier_n_pretrain: int = 5000,  # initial sfun evaluations for classifier pre-training
+    classifier_retrain_every: int = 10,  # retrain classifier every N rounds
+    classifier_shift_factor: float = 3.0,  # IS shift aggressiveness
+    classifier_mix_original: float = 0.3,  # fraction of original distribution to mix in
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
@@ -2007,7 +2013,9 @@ def run_rule_extraction_by_mcs(
     if rules_surv is None: rules_surv = []
     if rules_fail is None: rules_fail = []
 
-    device = probs.device
+    # Ensure probs is on the same device that from_rule_dict_to_mat uses
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    probs = probs.to(device)
 
     unk_prob = 1.0
     n_round = 0
@@ -2057,6 +2065,18 @@ def run_rule_extraction_by_mcs(
     total_loops = max(n_sample // sample_batch_size, 1)
     # Search loops: capped for finding unknowns; full total_loops used only for probability estimation
     search_loops = min(max_search_loops, total_loops) if max_search_loops > 0 else total_loops
+
+    # ---- classifier-guided boundary search ----
+    _boundary_guide = None
+    if classifier_guided:
+        from tsum.classifier import BoundaryGuide
+        _boundary_guide = BoundaryGuide(
+            n_vars, n_state, probs, row_names, sfun,
+            shift_factor=classifier_shift_factor,
+            mix_original=classifier_mix_original,
+        )
+        print(f"Classifier-guided mode: pre-training on {classifier_n_pretrain} samples...")
+        _boundary_guide.pretrain(n_samples=classifier_n_pretrain, n_workers=n_workers)
 
     # ---- main loop ----
     while is_new_cand and (unk_prob > unk_prob_thres if unk_prob_opt == "abs" else unk_prob / (min([last_probs["failure"]+1e-12, last_probs["survival"]+1e-12])) > unk_prob_thres):
@@ -2108,7 +2128,10 @@ def run_rule_extraction_by_mcs(
                 # Re-classify merged batch on primary device for correct indices
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
             else:
-                samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
+                if _boundary_guide is not None and _boundary_guide.fitted:
+                    samples = _boundary_guide.generate_candidates(sample_batch_size)
+                else:
+                    samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
 
                 counts["survival"] += int(res["survival"])
@@ -2292,6 +2315,21 @@ def run_rule_extraction_by_mcs(
                 sys_val_list.append(fval)
                 sys_val_list.sort(key=mixed_sort_key)
                 print(f"Updated sys_vals: {sys_val_list}")
+
+        # ---- Feed observations to classifier and retrain periodically ----
+        if _boundary_guide is not None:
+            if _pool is not None and min_rule_search:
+                # Parallel path: feed back minimized states from batch results
+                for min_comps_st, sys_st, fval in results:
+                    _boundary_guide.add_observation(min_comps_st, sys_st)
+            else:
+                # Serial path: feed back the evaluated unknown state
+                _boundary_guide.add_observation(comps_st_test, sys_st)
+            if (n_round % classifier_retrain_every) == 0:
+                _boundary_guide.retrain()
+                if _boundary_guide.fitted:
+                    print(f"  Classifier retrained: {_boundary_guide.n_observations} obs, "
+                          f"{_boundary_guide.n_failures} failures")
 
         # ---- Periodic probability (bound) test via sampling ----
         if _t_rules == 0.0:
