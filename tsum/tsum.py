@@ -2319,9 +2319,10 @@ def run_rule_extraction_by_mcs(
         # ---- Feed observations to classifier and retrain periodically ----
         if _boundary_guide is not None:
             if _pool is not None and min_rule_search:
-                # Parallel path: feed back minimized states from batch results
-                for min_comps_st, sys_st, fval in results:
-                    _boundary_guide.add_observation(min_comps_st, sys_st)
+                # Parallel path: feed back original (unminimized) states
+                # with sys_st from minimization results
+                for (cst, _), (_, sys_st, _) in zip(tasks, results):
+                    _boundary_guide.add_observation(cst, sys_st)
             else:
                 # Serial path: feed back the evaluated unknown state
                 _boundary_guide.add_observation(comps_st_test, sys_st)
