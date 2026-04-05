@@ -120,19 +120,25 @@ def sample_component_states(
     return X
 
 
-class _SfunEvaluator:
-    """Picklable callable for multiprocessing evaluation of sfun."""
+_worker_sfun = None
+_worker_X = None
+_worker_row_names = None
 
-    def __init__(self, X, sfun, row_names):
-        self.X = X
-        self.sfun = sfun
-        self.row_names = row_names
 
-    def __call__(self, i):
-        comps_st = {self.row_names[k]: int(self.X[i, k])
-                    for k in range(len(self.row_names))}
-        _, sys_st, _ = self.sfun(comps_st)
-        return sys_st
+def _worker_init(sfun, X, row_names):
+    """Initializer for Pool workers — stores unpicklable objects as globals."""
+    global _worker_sfun, _worker_X, _worker_row_names
+    _worker_sfun = sfun
+    _worker_X = X
+    _worker_row_names = row_names
+
+
+def _worker_eval(i):
+    """Evaluate sfun for sample i using worker-global state."""
+    comps_st = {_worker_row_names[k]: int(_worker_X[i, k])
+                for k in range(len(_worker_row_names))}
+    _, sys_st, _ = _worker_sfun(comps_st)
+    return sys_st
 
 
 def evaluate_sfun_batch(
@@ -154,17 +160,20 @@ def evaluate_sfun_batch(
         y: (n_samples,) integer system states
     """
     n_samples = X.shape[0]
-    evaluator = _SfunEvaluator(X, sfun, row_names)
 
     if n_workers > 1:
         from multiprocessing import Pool
-        with Pool(n_workers) as pool:
-            y = pool.map(evaluator, range(n_samples))
+        with Pool(n_workers, initializer=_worker_init,
+                  initargs=(sfun, X, row_names)) as pool:
+            y = pool.map(_worker_eval, range(n_samples))
         return np.array(y, dtype=np.int32)
     else:
         y = np.empty(n_samples, dtype=np.int32)
         for i in range(n_samples):
-            y[i] = evaluator(i)
+            comps_st = {row_names[k]: int(X[i, k])
+                        for k in range(len(row_names))}
+            _, sys_st, _ = sfun(comps_st)
+            y[i] = sys_st
         return y
 
 
