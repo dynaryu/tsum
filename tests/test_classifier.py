@@ -351,6 +351,38 @@ class TestBoundaryGuide:
         assert guide.fitted
         assert guide.n_failures >= 2
 
+    def test_rank_unknowns_prioritises_failures(self):
+        """rank_unknowns should pick states closest to failure boundary."""
+        n_vars = 4
+        n_state = 2
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        row_names = list(probs_dict.keys())
+        # threshold=3 means sum<3 is failure — ~34% failure rate with P(ok)=0.9
+        sfun = _make_sum_sfun(threshold=3)
+
+        guide = BoundaryGuide(n_vars, n_state, probs_t, row_names, sfun)
+        guide.pretrain(n_samples=500)
+
+        # Create a batch of one-hot samples: mix of mostly-operational and mostly-failed
+        samples = torch.zeros(10, n_vars, n_state)
+        for i in range(10):
+            for j in range(n_vars):
+                # First 5 samples: all operational (state=1)
+                # Last 5 samples: all failed (state=0) — these should be ranked higher
+                s = 1 if i < 5 else 0
+                samples[i, j, s] = 1
+
+        idx_unknown = torch.arange(10)
+        picked = guide.rank_unknowns(samples, idx_unknown, n_pick=3)
+
+        assert len(picked) == 3
+        # The picked indices should prefer the failed states (indices 5-9)
+        # since they have higher P(failure)
+        for idx in picked:
+            assert idx.item() >= 5, \
+                f"Expected failed-state index (>=5), got {idx.item()}"
+
     def test_unfitted_falls_back_to_original(self):
         """Before training, generate_candidates should use original distribution."""
         n_vars = 3

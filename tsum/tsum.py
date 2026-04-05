@@ -2067,7 +2067,7 @@ def run_rule_extraction_by_mcs(
     # Search loops: capped for finding unknowns; full total_loops used only for probability estimation
     search_loops = min(max_search_loops, total_loops) if max_search_loops > 0 else total_loops
 
-    # ---- classifier-guided boundary search ----
+    # ---- classifier-guided unknown selection ----
     _boundary_guide = None
     if classifier_guided:
         from tsum.classifier import BoundaryGuide
@@ -2080,6 +2080,7 @@ def run_rule_extraction_by_mcs(
             _boundary_guide.seed_from_failure_rules(classifier_seed_rules)
         print(f"Classifier-guided mode: pre-training on {classifier_n_pretrain} samples...")
         _boundary_guide.pretrain(n_samples=classifier_n_pretrain, n_workers=n_workers)
+        print("  Classifier will rank unknowns by P(failure) for evaluation")
 
     # ---- main loop ----
     while is_new_cand and (unk_prob > unk_prob_thres if unk_prob_opt == "abs" else unk_prob / (min([last_probs["failure"]+1e-12, last_probs["survival"]+1e-12])) > unk_prob_thres):
@@ -2131,10 +2132,7 @@ def run_rule_extraction_by_mcs(
                 # Re-classify merged batch on primary device for correct indices
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
             else:
-                if _boundary_guide is not None and _boundary_guide.fitted:
-                    samples = _boundary_guide.generate_candidates(sample_batch_size)
-                else:
-                    samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
+                samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
 
                 counts["survival"] += int(res["survival"])
@@ -2230,8 +2228,11 @@ def run_rule_extraction_by_mcs(
         if _pool is not None and min_rule_search:
             # ---- Parallel: pick up to n_workers unknowns and minimize concurrently ----
             n_pick = min(n_workers, len(idx_unknown))
-            perm = torch.randperm(len(idx_unknown))[:n_pick]
-            picked_indices = idx_unknown[perm]
+            if _boundary_guide is not None and _boundary_guide.fitted:
+                picked_indices = _boundary_guide.rank_unknowns(samples, idx_unknown, n_pick)
+            else:
+                perm = torch.randperm(len(idx_unknown))[:n_pick]
+                picked_indices = idx_unknown[perm]
 
             tasks = []
             for idx_i in picked_indices:
@@ -2275,7 +2276,11 @@ def run_rule_extraction_by_mcs(
 
         else:
             # ---- Serial (original): pick one unknown ----
-            rand_idx = idx_unknown[torch.randint(len(idx_unknown), (1,))].item()
+            if _boundary_guide is not None and _boundary_guide.fitted:
+                picked = _boundary_guide.rank_unknowns(samples, idx_unknown, 1)
+                rand_idx = picked[0].item()
+            else:
+                rand_idx = idx_unknown[torch.randint(len(idx_unknown), (1,))].item()
             sample0 = samples[rand_idx]  # (n_var, n_state)
 
             states = torch.argmax(sample0, dim=1).tolist()

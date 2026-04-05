@@ -497,6 +497,41 @@ class BoundaryGuide:
         self._boundary_probs = None  # invalidate cached distribution
         self._needs_retrain = False
 
+    def rank_unknowns(self, samples: torch.Tensor, idx_unknown: torch.Tensor,
+                      n_pick: int) -> torch.Tensor:
+        """
+        Rank unknown-classified samples by proximity to the failure boundary
+        and return the top-n indices (into `samples`) to evaluate.
+
+        Prioritises states the classifier believes are closest to failure,
+        maximising the chance of discovering failure rules.
+
+        Args:
+            samples: (n_batch, n_vars, n_state) one-hot tensor from search phase
+            idx_unknown: 1-D tensor of indices into `samples` that are unknown
+            n_pick: number of unknowns to select
+
+        Returns:
+            picked_indices: 1-D tensor of indices into `samples`, length min(n_pick, len(idx_unknown))
+        """
+        n_pick = min(n_pick, len(idx_unknown))
+
+        if not self.classifier._fitted or n_pick == len(idx_unknown):
+            # No classifier or picking all — random permutation
+            perm = torch.randperm(len(idx_unknown))[:n_pick]
+            return idx_unknown[perm]
+
+        # Convert unknown samples to integer array for classifier
+        unk_samples = samples[idx_unknown]  # (n_unk, n_vars, n_state)
+        X_int = torch.argmax(unk_samples, dim=2).cpu().numpy()  # (n_unk, n_vars)
+
+        # Score by P(failure) — higher = more likely to be a failure state
+        p_fail = self.classifier.predict_proba_failure(X_int)  # (n_unk,)
+
+        # Pick top-n by P(failure), breaking ties randomly
+        top_idx = np.argsort(p_fail)[::-1][:n_pick]
+        return idx_unknown[torch.from_numpy(top_idx.copy())]
+
     def generate_candidates(self, n_samples: int) -> torch.Tensor:
         """
         Generate one-hot samples biased toward the decision boundary.
