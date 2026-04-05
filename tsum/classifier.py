@@ -120,6 +120,21 @@ def sample_component_states(
     return X
 
 
+class _SfunEvaluator:
+    """Picklable callable for multiprocessing evaluation of sfun."""
+
+    def __init__(self, X, sfun, row_names):
+        self.X = X
+        self.sfun = sfun
+        self.row_names = row_names
+
+    def __call__(self, i):
+        comps_st = {self.row_names[k]: int(self.X[i, k])
+                    for k in range(len(self.row_names))}
+        _, sys_st, _ = self.sfun(comps_st)
+        return sys_st
+
+
 def evaluate_sfun_batch(
     X: np.ndarray,
     sfun: Callable,
@@ -139,21 +154,17 @@ def evaluate_sfun_batch(
         y: (n_samples,) integer system states
     """
     n_samples = X.shape[0]
-
-    def _eval_one(i):
-        comps_st = {row_names[k]: int(X[i, k]) for k in range(len(row_names))}
-        _, sys_st, _ = sfun(comps_st)
-        return sys_st
+    evaluator = _SfunEvaluator(X, sfun, row_names)
 
     if n_workers > 1:
         from multiprocessing import Pool
         with Pool(n_workers) as pool:
-            y = pool.map(_eval_one, range(n_samples))
+            y = pool.map(evaluator, range(n_samples))
         return np.array(y, dtype=np.int32)
     else:
         y = np.empty(n_samples, dtype=np.int32)
         for i in range(n_samples):
-            y[i] = _eval_one(i)
+            y[i] = evaluator(i)
         return y
 
 
