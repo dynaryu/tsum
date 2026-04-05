@@ -1,8 +1,13 @@
 """
-Run TSUM on IEEE 300-bus DC-OPF with classifier-guided boundary search.
+Run TSUM on IEEE 300-bus DC-OPF with classifier-guided unknown selection.
 
-Uses a monotone classifier to bias sampling toward the decision boundary,
-accelerating discovery of unknown states in high-dimensional problems.
+Standard TSUM sampling discovers unknown states; a monotone classifier then
+ranks those unknowns by P(failure) so that the most failure-prone states are
+evaluated first.  This steers minimisation toward failure rules without
+altering the search-phase sampling distribution.
+
+Optionally seeds the classifier with pre-found failure rules (e.g. from
+k-fixed exhaustive search) to bootstrap the failure signal.
 
 Components: 711 total (300 buses + 411 branches)
 System function: DC-OPF, blackout_threshold=26.1%
@@ -10,6 +15,7 @@ Reference: Chan et al. (2024), Table 2: p_f ~ 1.0e-4
 
 Usage:
     python run_classifier.py
+    python run_classifier.py --seed-rules path/to/seed_rules_fail.json
     python run_classifier.py --unk-prob-thres 1e-4 --n-workers 48
     python run_classifier.py --devices cuda:0,cuda:1
 """
@@ -53,10 +59,8 @@ def parse_args():
                         help="Initial sfun evaluations for classifier pre-training (default: 5000)")
     parser.add_argument("--classifier-retrain-every", type=int, default=10,
                         help="Retrain classifier every N rounds (default: 10)")
-    parser.add_argument("--classifier-shift-factor", type=float, default=3.0,
-                        help="IS shift aggressiveness for boundary sampling (default: 3.0)")
-    parser.add_argument("--classifier-mix-original", type=float, default=0.3,
-                        help="Fraction of original distribution to mix in (default: 0.3)")
+    parser.add_argument("--seed-rules", type=str, default="",
+                        help="Path to JSON file with failure rules to seed the classifier (from k-fixed search)")
     parser.add_argument("--output-dir", type=str, default="results_classifier",
                         help="Output directory (default: results_classifier)")
     return parser.parse_args()
@@ -68,7 +72,7 @@ def main():
     multi_devices = device_list if len(device_list) > 1 else None
 
     print("=" * 60)
-    print("Classifier-guided TSUM rule extraction")
+    print("TSUM rule extraction with classifier-guided unknown selection")
     print("IEEE 300-bus DC-OPF")
     print("=" * 60)
 
@@ -130,19 +134,27 @@ def main():
     print(f"  All failed:      blackout={fval:.4f}%, sys_st={sys_st}")
 
     # ---------------------------------------------------------------
-    # 4. Run classifier-guided rule extraction
+    # 4. Run rule extraction with classifier-guided unknown selection
     # ---------------------------------------------------------------
+    # Load seed failure rules if provided
+    seed_rules = None
+    if args.seed_rules:
+        seed_path = Path(args.seed_rules)
+        if not seed_path.is_absolute():
+            seed_path = HERE / seed_path
+        with open(seed_path) as f:
+            seed_rules = json.load(f)
+        print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
+
     output_dir = HERE / args.output_dir
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     {args.n_sample:,} per round (batch {args.sample_batch_size:,})")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
     print(f"  Classifier:  pretrain={args.classifier_n_pretrain}, "
-          f"retrain_every={args.classifier_retrain_every}, "
-          f"shift={args.classifier_shift_factor}, "
-          f"mix={args.classifier_mix_original}")
+          f"retrain_every={args.classifier_retrain_every}")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
-    print(f"\nStarting classifier-guided rule extraction...\n", flush=True)
+    print(f"\nStarting rule extraction with classifier-guided unknown selection...\n", flush=True)
 
     t0 = time.time()
     result = tsum.run_rule_extraction_by_mcs(
@@ -160,8 +172,7 @@ def main():
         classifier_guided=True,
         classifier_n_pretrain=args.classifier_n_pretrain,
         classifier_retrain_every=args.classifier_retrain_every,
-        classifier_shift_factor=args.classifier_shift_factor,
-        classifier_mix_original=args.classifier_mix_original,
+        classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
