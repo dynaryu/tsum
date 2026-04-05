@@ -8,7 +8,7 @@ Components: 304 total (118 buses + 186 branches)
   - 54 generator buses: 4-state (0=removed, 1=40%cap, 2=80%cap, 3=full)
   - 64 ordinary buses: 2-state (0=failed, 1=operational)
   - 186 branches: 2-state (0=failed, 1=operational)
-System function: DC-OPF, blackout_threshold=26.1%
+System function: DC-OPF, blackout_threshold=13.8%
 Reference: Chan et al. (2024), Table 2: p_f ~ 1.0e-4
 
 Usage:
@@ -119,7 +119,7 @@ def main():
     print("\nInitialising DC-OPF system function...")
     sfun = make_dcopt_sfun(
         case_path=str(HERE / "case118.m"),
-        blackout_threshold=26.1,
+        blackout_threshold=13.8,
         alpha=2.0,
     )
 
