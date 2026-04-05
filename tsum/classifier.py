@@ -456,8 +456,9 @@ class BoundaryGuide:
         X = np.array(self._X_data, dtype=np.int32)
         y = np.array(self._y_data, dtype=np.int32)
 
-        # Need both classes to train a meaningful classifier
-        if len(np.unique(y)) < 2:
+        # Need both classes with enough members for stratified split
+        _, counts = np.unique(y, return_counts=True)
+        if len(counts) < 2 or counts.min() < 2:
             self._needs_retrain = False
             return
 
