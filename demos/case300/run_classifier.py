@@ -6,6 +6,10 @@ total component degradation (most degraded first) so that failure-prone states
 are evaluated before survival-dominated ones.  This exploits system coherence
 (monotonicity) without any ML training.
 
+Component weights start uniform and adapt as failure rules are discovered:
+components appearing in more failure rules get higher weight.  Optionally
+seeds the weights from pre-found failure rules (e.g. from k-fixed search).
+
 Components: 711 total (300 buses + 411 branches)
 System function: DC-OPF, blackout_threshold=26.1%
 Reference: Chan et al. (2024), Table 2: p_f ~ 1.0e-4
@@ -50,6 +54,17 @@ def parse_args():
                         help="Parallel workers for sfun evaluation (default: 1)")
     parser.add_argument("--devices", type=str, default="",
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
+    parser.add_argument("--seed-rules", type=str, default="",
+                        help="Path to JSON file with failure rules to seed component weights (from k-fixed search)")
+    parser.add_argument("--degradation-alpha", type=float, default=3.0,
+                        help="Exponential scaling factor for component weights (default: 3.0)")
+    parser.add_argument("--gen-weight", type=float, default=2.0,
+                        help="Initial weight for generator buses (default: 2.0)")
+    parser.add_argument("--branch-weight", type=float, default=1.5,
+                        help="Initial weight for branches (default: 1.5)")
+    parser.add_argument("--bus-weight", type=float, default=1.0,
+                        help="Initial weight for ordinary buses (default: 1.0)")
+
     parser.add_argument("--output-dir", type=str, default="results_degradation",
                         help="Output directory (default: results_degradation)")
     return parser.parse_args()
@@ -125,6 +140,27 @@ def main():
     # ---------------------------------------------------------------
     # 4. Run rule extraction with degradation-ranked unknown selection
     # ---------------------------------------------------------------
+    # Load seed failure rules if provided
+    seed_rules = None
+    if args.seed_rules:
+        seed_path = Path(args.seed_rules)
+        if not seed_path.is_absolute():
+            seed_path = HERE / seed_path
+        with open(seed_path) as f:
+            seed_rules = json.load(f)
+        print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
+
+    # Build per-component initial weights by type
+    comp_weights_init = {}
+    for name in row_names:
+        if name.startswith("vbus") and len(probs_dict[name]) == 4:
+            comp_weights_init[name] = args.gen_weight
+        elif name.startswith("br"):
+            comp_weights_init[name] = args.branch_weight
+        else:
+            comp_weights_init[name] = args.bus_weight
+
+
     output_dir = HERE / args.output_dir
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     {args.n_sample:,} per round (batch {args.sample_batch_size:,})")
@@ -148,6 +184,9 @@ def main():
         n_workers=args.n_workers,
         devices=multi_devices,
         rank_by_degradation=True,
+        degradation_alpha=args.degradation_alpha,
+        comp_weights_init=comp_weights_init,
+        classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
