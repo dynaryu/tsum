@@ -2059,10 +2059,20 @@ def run_rule_extraction_by_mcs(
 
     # Apply user-supplied per-component initial weights
     if comp_weights_init:
+        unknown = [c for c in comp_weights_init if c not in _name_to_idx]
+        if unknown:
+            import warnings
+            warnings.warn(
+                f"comp_weights_init: unknown components ignored: {unknown[:5]}"
+                + (f" ... ({len(unknown)} total)" if len(unknown) > 5 else "")
+            )
         for comp, w in comp_weights_init.items():
             idx = _name_to_idx.get(comp)
             if idx is not None:
                 _comp_importance[idx] += w
+
+    # Threshold for renormalising _comp_importance to avoid unbounded growth
+    _IMPORTANCE_RENORM_THRESHOLD = 1e6
 
     def _update_comp_importance(rule_dicts: list, is_failure: bool):
         """Accumulate sparsity-weighted importance from new rules.
@@ -2071,6 +2081,9 @@ def run_rule_extraction_by_mcs(
         components in small (minimal) rules get more weight than those in
         large ones.  For survival rules, importance is further scaled by
         how demanding the state requirement is (required_state / max_state).
+
+        When accumulated importance exceeds a threshold, it is renormalised
+        to avoid numerical precision loss in float32.
         """
         nonlocal _weights_dirty
         for rule in rule_dicts:
@@ -2096,6 +2109,11 @@ def run_rule_extraction_by_mcs(
                 _comp_importance[idx] += contrib
         _weights_dirty = True
 
+        # Renormalise if accumulated importance grows too large
+        total = _comp_importance.sum().item()
+        if total > _IMPORTANCE_RENORM_THRESHOLD:
+            _comp_importance /= total
+
     def _recompute_weights():
         """Recompute exponential weights from accumulated importance."""
         nonlocal _weights_dirty
@@ -2104,7 +2122,6 @@ def run_rule_extraction_by_mcs(
             # Exponential scaling: exp(alpha * importance / sum(importance))
             # Gives weight range of [exp(0), exp(alpha)] ≈ [1.0, exp(alpha)]
             normalized = _comp_importance / total
-            #_comp_weights[:] = torch.exp(degradation_alpha * normalized * n_vars)
             # consistent across problem sizes
             _comp_weights[:] = torch.exp(degradation_alpha * normalized)
         _weights_dirty = False
