@@ -1,10 +1,13 @@
 """
-Run TSUM on IEEE 118-bus DC-OPF with degradation-ranked unknown selection.
+Run TSUM on IEEE 118-bus DC-OPF with weighted degradation-ranked unknown selection.
 
 Standard TSUM sampling discovers unknown states; unknowns are then ranked by
-total component degradation (most degraded first) so that failure-prone states
-are evaluated before survival-dominated ones.  This exploits system coherence
-(monotonicity) without any ML training.
+weighted component degradation (most degraded first, weighted by failure rule
+frequency) so that failure-prone states are evaluated first.
+
+Component weights start uniform and adapt as failure rules are discovered:
+components appearing in more failure rules get higher weight.  Optionally
+seeds the weights from pre-found failure rules (e.g. from k-fixed search).
 
 Components: 304 total (118 buses + 186 branches)
   - 54 generator buses: 4-state (0=removed, 1=40%cap, 2=80%cap, 3=full)
@@ -15,6 +18,7 @@ Reference: Chan et al. (2024), Table 2: p_f ~ 1.0e-4
 
 Usage:
     python run_classifier.py
+    python run_classifier.py --seed-rules results_fixedk_test/seed_rules_fail.json
     python run_classifier.py --unk-prob-thres 1e-4 --n-workers 48
     python run_classifier.py --devices cuda:0,cuda:1
 """
@@ -53,6 +57,8 @@ def parse_args():
                         help="Parallel workers for sfun evaluation (default: 1)")
     parser.add_argument("--devices", type=str, default="",
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
+    parser.add_argument("--seed-rules", type=str, default="",
+                        help="Path to JSON file with failure rules to seed component weights (from k-fixed search)")
     parser.add_argument("--output-dir", type=str, default="results_degradation",
                         help="Output directory (default: results_degradation)")
     return parser.parse_args()
@@ -128,11 +134,21 @@ def main():
     # ---------------------------------------------------------------
     # 4. Run rule extraction with degradation-ranked unknown selection
     # ---------------------------------------------------------------
+    # Load seed failure rules if provided
+    seed_rules = None
+    if args.seed_rules:
+        seed_path = Path(args.seed_rules)
+        if not seed_path.is_absolute():
+            seed_path = HERE / seed_path
+        with open(seed_path) as f:
+            seed_rules = json.load(f)
+        print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
+
     output_dir = HERE / args.output_dir
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     {args.n_sample:,} per round (batch {args.sample_batch_size:,})")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
-    print(f"  Ranking:     degradation (most degraded unknowns first)")
+    print(f"  Ranking:     weighted degradation (most degraded unknowns first)")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -151,6 +167,7 @@ def main():
         n_workers=args.n_workers,
         devices=multi_devices,
         rank_by_degradation=True,
+        classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
