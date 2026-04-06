@@ -2079,43 +2079,8 @@ def run_rule_extraction_by_mcs(
     _name_to_idx = {name: i for i, name in enumerate(row_names)}
     _weights_dirty = False
 
-    # Apply user-supplied per-component initial weights.
-    # When seed rules are provided, comp_weights_init is only used as a weak
-    # secondary signal for components NOT covered by the seed rules, so that
-    # the seed signal dominates the importance ranking.
-    _seeded_components = set()
-    if classifier_seed_rules:
-        for rule in classifier_seed_rules:
-            for comp in rule:
-                if comp != "sys" and comp in _name_to_idx:
-                    _seeded_components.add(_name_to_idx[comp])
-
-    if comp_weights_init:
-        unknown = [c for c in comp_weights_init if c not in _name_to_idx]
-        if unknown:
-            import warnings
-            warnings.warn(
-                f"comp_weights_init: unknown components ignored: {unknown[:5]}"
-                + (f" ... ({len(unknown)} total)" if len(unknown) > 5 else "")
-            )
-        for comp, w in comp_weights_init.items():
-            idx = _name_to_idx.get(comp)
-            if idx is not None:
-                if idx in _seeded_components:
-                    # Seeded components get only 10% of the per-type weight
-                    # so seed rules dominate the importance ranking.
-                    _comp_importance[idx] += w * 0.1
-                else:
-                    _comp_importance[idx] += w
-
     # Threshold for renormalising _comp_importance to avoid unbounded growth
     _IMPORTANCE_RENORM_THRESHOLD = 1e6
-
-    # Apply seed rules FIRST so they dominate the importance ranking.
-    # These represent pre-discovered minimum cut sets.
-    if classifier_seed_rules:
-        _update_comp_importance(classifier_seed_rules, is_failure=True)
-        _weights_dirty = True
 
     def _update_comp_importance(rule_dicts: list, is_failure: bool):
         """Accumulate sparsity-weighted importance from new rules.
@@ -2208,68 +2173,115 @@ def run_rule_extraction_by_mcs(
     # Search loops: capped for finding unknowns; full total_loops used only for probability estimation
     search_loops = min(max_search_loops, total_loops) if max_search_loops > 0 else total_loops
 
-    # ---- sensitivity pre-screen ----
-    if sensitivity_prescreen and rank_by_degradation:
-        print("Sensitivity pre-screen: evaluating single-component failures...")
-        _t_sens = time.perf_counter()
-        # Build baseline: all components at best state
-        best_state = {}
-        for name in row_names:
-            best_state[name] = n_state - 1
-        # Build tasks: each component individually at worst state (0)
-        sens_tasks = []
-        for name in row_names:
-            cst = dict(best_state)
-            cst[name] = 0
-            sens_tasks.append((cst, None))  # (comps_st, unused) matches _minimize_one_unknown signature
+    # ---- initialize component importance for degradation ranking ----
+    # Three sources, each normalized to [0, 1] before adding, so they
+    # contribute equally regardless of raw scale:
+    #   1. comp_weights_init  — user-supplied per-type priors (weakest signal)
+    #   2. sensitivity_prescreen — single-component sfun evaluation (data-driven)
+    #   3. classifier_seed_rules — sparsity-weighted from known failure rules (strongest)
+    #
+    # After all sources are added, _recompute_weights() converts the
+    # accumulated importance into exponential weights for the ranking function.
 
-        # Evaluate — use pool if available, else serial
-        if _pool is not None:
-            sens_results = _pool.starmap(
-                _eval_sfun_worker, [(cst,) for cst, _ in sens_tasks])
-        else:
-            sens_results = []
-            for cst, _ in sens_tasks:
-                fval, sys_st, _ = sfun(cst)
-                sens_results.append((fval, sys_st))
-
-        # Convert to importance: blackout % when component fails alone
-        sens_scores = torch.zeros(n_vars, dtype=torch.float32)
-        for i, (fval, sys_st) in enumerate(sens_results):
-            sens_scores[i] = float(fval) if isinstance(fval, (int, float)) else 0.0
-
-        # Normalize to [0, 1] and add to importance.
-        # Only contribute to components NOT in seed rules, so seeds dominate.
-        s_max = sens_scores.max().item()
-        if s_max > 0:
-            sens_scores /= s_max
-        for i in range(n_vars):
-            if i not in _seeded_components:
-                _comp_importance[i] += sens_scores[i]
-        _weights_dirty = True
-
-        _t_sens = time.perf_counter() - _t_sens
-        n_nonzero = int((sens_scores > 0).sum().item())
-        print(f"  Evaluated {n_vars} components in {_t_sens:.1f}s "
-              f"({n_nonzero} with nonzero impact, max blackout={s_max:.2f}%)")
-
-    # ---- unknown ranking strategy ----
     _rank_mode = None  # None = random (default), "degradation", "classifier"
 
     if rank_by_degradation:
         _rank_mode = "degradation"
-        if classifier_seed_rules:
-            _recompute_weights()
-            n_seeded = len(classifier_seed_rules)
-            n_comps_weighted = int((_comp_importance > 0).sum().item())
-            w_max = _comp_weights.max().item()
-            print(f"Degradation ranking: seeded with {n_seeded} failure rules "
-                  f"({n_comps_weighted} components weighted, max_weight={w_max:.1f})")
-        else:
-            print("Degradation ranking: unknowns ranked by weighted degradation (most degraded first)")
+        print("Degradation ranking: unknowns ranked by weighted degradation (most degraded first)")
+
+        # Source 1: user-supplied per-component type priors
         if comp_weights_init:
+            unknown = [c for c in comp_weights_init if c not in _name_to_idx]
+            if unknown:
+                import warnings
+                warnings.warn(
+                    f"comp_weights_init: unknown components ignored: {unknown[:5]}"
+                    + (f" ... ({len(unknown)} total)" if len(unknown) > 5 else "")
+                )
+            init_scores = torch.zeros(n_vars, dtype=torch.float32)
+            for comp, w in comp_weights_init.items():
+                idx = _name_to_idx.get(comp)
+                if idx is not None:
+                    init_scores[idx] = w
+            # Normalize to [0, 1]
+            init_max = init_scores.max().item()
+            if init_max > 0:
+                init_scores /= init_max
+            _comp_importance += init_scores
+            _weights_dirty = True
             n_init = sum(1 for c in comp_weights_init if c in _name_to_idx)
             print(f"  Per-component priors: {n_init} components initialized")
+
+        # Source 2: sensitivity pre-screen (single-component failures)
+        if sensitivity_prescreen:
+            print("  Sensitivity pre-screen: evaluating single-component failures...")
+            _t_sens = time.perf_counter()
+            best_state = {name: n_state - 1 for name in row_names}
+            sens_tasks = []
+            for name in row_names:
+                cst = dict(best_state)
+                cst[name] = 0
+                sens_tasks.append(cst)
+
+            if _pool is not None:
+                sens_results = _pool.starmap(
+                    _eval_sfun_worker, [(cst,) for cst in sens_tasks])
+            else:
+                sens_results = []
+                for cst in sens_tasks:
+                    fval, sys_st, _ = sfun(cst)
+                    sens_results.append((fval, sys_st))
+
+            sens_scores = torch.zeros(n_vars, dtype=torch.float32)
+            for i, (fval, _) in enumerate(sens_results):
+                sens_scores[i] = float(fval) if isinstance(fval, (int, float)) else 0.0
+
+            # Normalize to [0, 1]
+            s_max = sens_scores.max().item()
+            if s_max > 0:
+                sens_scores /= s_max
+            _comp_importance += sens_scores
+            _weights_dirty = True
+
+            _t_sens = time.perf_counter() - _t_sens
+            n_nonzero = int((sens_scores > 0).sum().item())
+            print(f"    {n_vars} components in {_t_sens:.1f}s "
+                  f"({n_nonzero} with nonzero impact, max blackout={s_max:.2f}%)")
+
+        # Source 3: seed failure rules (sparsity-weighted importance)
+        if classifier_seed_rules:
+            # _update_comp_importance adds 1/n_conds per component per rule.
+            # To normalize on the same [0, 1] scale, we accumulate into a
+            # temporary buffer, normalize, then add.
+            seed_scores = torch.zeros(n_vars, dtype=torch.float32)
+            for rule in classifier_seed_rules:
+                n_conds = sum(1 for k in rule if k != "sys")
+                if n_conds == 0:
+                    continue
+                for comp in rule:
+                    if comp == "sys":
+                        continue
+                    idx = _name_to_idx.get(comp)
+                    if idx is not None:
+                        seed_scores[idx] += 1.0 / n_conds
+            seed_max = seed_scores.max().item()
+            if seed_max > 0:
+                seed_scores /= seed_max
+            _comp_importance += seed_scores
+            _weights_dirty = True
+            n_seeded = len(classifier_seed_rules)
+            n_comps_seeded = int((seed_scores > 0).sum().item())
+            print(f"  Seed rules: {n_seeded} failure rules ({n_comps_seeded} components)")
+
+        # Compute initial exponential weights from accumulated importance
+        if _weights_dirty:
+            _recompute_weights()
+            n_comps_weighted = int((_comp_importance > 0).sum().item())
+            w_min = _comp_weights.min().item()
+            w_max = _comp_weights.max().item()
+            print(f"  Initial weights: {n_comps_weighted}/{n_vars} components, "
+                  f"range=[{w_min:.2f}, {w_max:.2f}]")
+
         if degradation_diversity:
             print("  Selection: probabilistic (proportional to degradation score)")
 
