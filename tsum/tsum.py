@@ -2014,14 +2014,17 @@ def run_rule_extraction_by_mcs(
 
     def _rank_by_degradation(samples: torch.Tensor, idx_unknown: torch.Tensor,
                              n_pick: int) -> torch.Tensor:
-        """Rank unknowns by total degradation: sum of (max_state - 1 - state_i).
+        """Rank unknowns by weighted degradation.
 
-        Most degraded states are most likely to be failures in a coherent system.
+        score = sum( weight_i * (max_state - 1 - state_i) )
+        Weights reflect how often each component appears in failure rules.
         """
         n_pick = min(n_pick, len(idx_unknown))
         unk_samples = samples[idx_unknown]  # (n_unk, n_vars, n_state)
         states = torch.argmax(unk_samples, dim=2)  # (n_unk, n_vars)
-        degradation = ((n_state - 1) - states).sum(dim=1)  # (n_unk,)
+        deg = (n_state - 1) - states  # (n_unk, n_vars)
+        w = _comp_weights.to(deg.device)
+        degradation = (w * deg).sum(dim=1)  # (n_unk,)
         _, top_idx = torch.topk(degradation, n_pick)
         return idx_unknown[top_idx]
 
@@ -2042,6 +2045,24 @@ def run_rule_extraction_by_mcs(
         rules_mat_surv = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
     if rules_mat_fail is None:
         rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
+
+    # Component importance weights for degradation ranking (updated as failure rules are found)
+    _comp_weights = torch.ones(n_vars, dtype=torch.float32)
+    _comp_fail_counts = torch.zeros(n_vars, dtype=torch.float32)
+    _name_to_idx = {name: i for i, name in enumerate(row_names)}
+
+    def _update_comp_weights_from_rules(rule_dicts: list):
+        """Update component weights from newly added failure rules."""
+        for rule in rule_dicts:
+            for comp in rule:
+                if comp == "sys":
+                    continue
+                idx = _name_to_idx.get(comp)
+                if idx is not None:
+                    _comp_fail_counts[idx] += 1
+        max_count = _comp_fail_counts.max().item()
+        if max_count > 0:
+            _comp_weights[:] = 1.0 + _comp_fail_counts / max_count
 
     sys_val_list: List[Any] = []
 
@@ -2087,7 +2108,14 @@ def run_rule_extraction_by_mcs(
 
     if rank_by_degradation:
         _rank_mode = "degradation"
-        print("Degradation ranking: unknowns ranked by total degradation (most degraded first)")
+        if classifier_seed_rules:
+            _update_comp_weights_from_rules(classifier_seed_rules)
+            n_seeded = len(classifier_seed_rules)
+            n_comps_weighted = int((_comp_fail_counts > 0).sum().item())
+            print(f"Degradation ranking: seeded with {n_seeded} failure rules "
+                  f"({n_comps_weighted} components weighted)")
+        else:
+            print("Degradation ranking: unknowns ranked by weighted degradation (most degraded first)")
 
     _boundary_guide = None
     if classifier_guided:
@@ -2293,6 +2321,8 @@ def run_rule_extraction_by_mcs(
                 rules_fail, rules_mat_fail, n_add, n_rem = update_rules_batch(
                     new_fail_dicts, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
                 print(f"Failure: {n_add} rules added, {n_rem} removed (from {len(new_fail_dicts)} candidates)")
+                if _rank_mode == "degradation" and n_add > 0:
+                    _update_comp_weights_from_rules(new_fail_dicts)
 
             if sys_val_list:
                 sys_val_list.sort(key=mixed_sort_key)
@@ -2340,6 +2370,8 @@ def run_rule_extraction_by_mcs(
             else:
                 print("Failure sample found from sampling.")
                 rules_fail, rules_mat_fail = update_rules(min_comps_st, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
+                if _rank_mode == "degradation":
+                    _update_comp_weights_from_rules([min_comps_st])
 
             print(f"New rule added. System state: {sys_st}, System value: {fval}. Total samples: {n_sample_actual}.")
             print(f"New rule (No. of conditions: {len(min_comps_st)-1}): {min_comps_st}")
