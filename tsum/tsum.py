@@ -1965,7 +1965,9 @@ def run_rule_extraction_by_mcs(
     min_rule_search: bool = True,
     rule_update_verbose: bool = True,
     # Unknown ranking strategies (pick one)
-    rank_by_degradation: bool = False,  # rank unknowns by total degradation (most degraded first)
+    rank_by_degradation: bool = False,  # rank unknowns by weighted degradation (most degraded first)
+    degradation_alpha: float = 3.0,  # exponential scaling factor for component weights
+    comp_weights_init: Optional[Dict[str, float]] = None,  # per-component initial weights (e.g. generators=2.0)
     # Classifier-guided boundary search (legacy, rank_by_degradation is simpler and recommended)
     classifier_guided: bool = False,  # use monotone classifier to rank unknowns
     classifier_n_pretrain: int = 5000,  # initial sfun evaluations for classifier pre-training
@@ -2017,8 +2019,10 @@ def run_rule_extraction_by_mcs(
         """Rank unknowns by weighted degradation.
 
         score = sum( weight_i * (max_state - 1 - state_i) )
-        Weights reflect how often each component appears in failure rules.
+        Weights are exponentially scaled from sparsity-weighted rule importance.
         """
+        if _weights_dirty:
+            _recompute_weights()
         n_pick = min(n_pick, len(idx_unknown))
         unk_samples = samples[idx_unknown]  # (n_unk, n_vars, n_state)
         states = torch.argmax(unk_samples, dim=2)  # (n_unk, n_vars)
@@ -2046,23 +2050,64 @@ def run_rule_extraction_by_mcs(
     if rules_mat_fail is None:
         rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
 
-    # Component importance weights for degradation ranking (updated as failure rules are found)
+    # Component importance weights for degradation ranking
+    # Updated from both survival and failure rules, weighted by 1/rule_size.
+    _comp_importance = torch.zeros(n_vars, dtype=torch.float32)
     _comp_weights = torch.ones(n_vars, dtype=torch.float32)
-    _comp_fail_counts = torch.zeros(n_vars, dtype=torch.float32)
     _name_to_idx = {name: i for i, name in enumerate(row_names)}
+    _weights_dirty = False
 
-    def _update_comp_weights_from_rules(rule_dicts: list):
-        """Update component weights from newly added failure rules."""
+    # Apply user-supplied per-component initial weights
+    if comp_weights_init:
+        for comp, w in comp_weights_init.items():
+            idx = _name_to_idx.get(comp)
+            if idx is not None:
+                _comp_importance[idx] += w
+
+    def _update_comp_importance(rule_dicts: list, is_failure: bool):
+        """Accumulate sparsity-weighted importance from new rules.
+
+        Each component's contribution from a rule is 1/n_conditions, so
+        components in small (minimal) rules get more weight than those in
+        large ones.  For survival rules, importance is further scaled by
+        how demanding the state requirement is (required_state / max_state).
+        """
+        nonlocal _weights_dirty
         for rule in rule_dicts:
-            for comp in rule:
+            n_conds = sum(1 for k in rule if k != "sys")
+            if n_conds == 0:
+                continue
+            for comp, cond in rule.items():
                 if comp == "sys":
                     continue
                 idx = _name_to_idx.get(comp)
-                if idx is not None:
-                    _comp_fail_counts[idx] += 1
-        max_count = _comp_fail_counts.max().item()
-        if max_count > 0:
-            _comp_weights[:] = 1.0 + _comp_fail_counts / max_count
+                if idx is None:
+                    continue
+                # Base contribution: inverse of rule size
+                contrib = 1.0 / n_conds
+                if not is_failure and n_state > 1:
+                    # For survival rules: scale by required state level
+                    # e.g. (">=", 2) with max_state=3 → 2/3 weight
+                    if isinstance(cond, (list, tuple)) and len(cond) == 2:
+                        req_state = int(cond[1])
+                    else:
+                        req_state = int(cond)
+                    contrib *= req_state / (n_state - 1)
+                _comp_importance[idx] += contrib
+        _weights_dirty = True
+
+    def _recompute_weights():
+        """Recompute exponential weights from accumulated importance."""
+        nonlocal _weights_dirty
+        total = _comp_importance.sum().item()
+        if total > 0:
+            # Exponential scaling: exp(alpha * importance / sum(importance))
+            # Gives weight range of [exp(0), exp(alpha)] ≈ [1.0, exp(alpha)]
+            normalized = _comp_importance / total
+            #_comp_weights[:] = torch.exp(degradation_alpha * normalized * n_vars)
+            # consistent across problem sizes
+            _comp_weights[:] = torch.exp(degradation_alpha * normalized)
+        _weights_dirty = False
 
     sys_val_list: List[Any] = []
 
@@ -2109,13 +2154,18 @@ def run_rule_extraction_by_mcs(
     if rank_by_degradation:
         _rank_mode = "degradation"
         if classifier_seed_rules:
-            _update_comp_weights_from_rules(classifier_seed_rules)
+            _update_comp_importance(classifier_seed_rules, is_failure=True)
+            _recompute_weights()
             n_seeded = len(classifier_seed_rules)
-            n_comps_weighted = int((_comp_fail_counts > 0).sum().item())
+            n_comps_weighted = int((_comp_importance > 0).sum().item())
+            w_max = _comp_weights.max().item()
             print(f"Degradation ranking: seeded with {n_seeded} failure rules "
-                  f"({n_comps_weighted} components weighted)")
+                  f"({n_comps_weighted} components weighted, max_weight={w_max:.1f})")
         else:
             print("Degradation ranking: unknowns ranked by weighted degradation (most degraded first)")
+        if comp_weights_init:
+            n_init = sum(1 for c in comp_weights_init if c in _name_to_idx)
+            print(f"  Per-component priors: {n_init} components initialized")
 
     _boundary_guide = None
     if classifier_guided:
@@ -2317,12 +2367,14 @@ def run_rule_extraction_by_mcs(
                 rules_surv, rules_mat_surv, n_add, n_rem = update_rules_batch(
                     new_surv_dicts, rules_surv, rules_mat_surv, row_names, verbose=rule_update_verbose)
                 print(f"Survival: {n_add} rules added, {n_rem} removed (from {len(new_surv_dicts)} candidates)")
+                if _rank_mode == "degradation" and n_add > 0:
+                    _update_comp_importance(new_surv_dicts, is_failure=False)
             if new_fail_dicts:
                 rules_fail, rules_mat_fail, n_add, n_rem = update_rules_batch(
                     new_fail_dicts, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
                 print(f"Failure: {n_add} rules added, {n_rem} removed (from {len(new_fail_dicts)} candidates)")
                 if _rank_mode == "degradation" and n_add > 0:
-                    _update_comp_weights_from_rules(new_fail_dicts)
+                    _update_comp_importance(new_fail_dicts, is_failure=True)
 
             if sys_val_list:
                 sys_val_list.sort(key=mixed_sort_key)
@@ -2367,11 +2419,13 @@ def run_rule_extraction_by_mcs(
             if sys_st >= sys_surv_st:
                 print("Survival sample found from sampling.")
                 rules_surv, rules_mat_surv = update_rules(min_comps_st, rules_surv, rules_mat_surv, row_names, verbose=rule_update_verbose)
+                if _rank_mode == "degradation":
+                    _update_comp_importance([min_comps_st], is_failure=False)
             else:
                 print("Failure sample found from sampling.")
                 rules_fail, rules_mat_fail = update_rules(min_comps_st, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
                 if _rank_mode == "degradation":
-                    _update_comp_weights_from_rules([min_comps_st])
+                    _update_comp_importance([min_comps_st], is_failure=True)
 
             print(f"New rule added. System state: {sys_st}, System value: {fval}. Total samples: {n_sample_actual}.")
             print(f"New rule (No. of conditions: {len(min_comps_st)-1}): {min_comps_st}")

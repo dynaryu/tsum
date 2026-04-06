@@ -59,6 +59,14 @@ def parse_args():
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
     parser.add_argument("--seed-rules", type=str, default="",
                         help="Path to JSON file with failure rules to seed component weights (from k-fixed search)")
+    parser.add_argument("--degradation-alpha", type=float, default=3.0,
+                        help="Exponential scaling factor for component weights (default: 3.0)")
+    parser.add_argument("--gen-weight", type=float, default=2.0,
+                        help="Initial weight for generator buses (default: 2.0)")
+    parser.add_argument("--branch-weight", type=float, default=1.5,
+                        help="Initial weight for branches (default: 1.5)")
+    parser.add_argument("--bus-weight", type=float, default=1.0,
+                        help="Initial weight for ordinary buses (default: 1.0)")
     parser.add_argument("--output-dir", type=str, default="results_degradation",
                         help="Output directory (default: results_degradation)")
     return parser.parse_args()
@@ -144,11 +152,23 @@ def main():
             seed_rules = json.load(f)
         print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
 
+    # Build per-component initial weights by type
+    comp_weights_init = {}
+    for name in row_names:
+        if name.startswith("vbus") and len(probs_dict[name]) == 4:
+            comp_weights_init[name] = args.gen_weight
+        elif name.startswith("br"):
+            comp_weights_init[name] = args.branch_weight
+        else:
+            comp_weights_init[name] = args.bus_weight
+
     output_dir = HERE / args.output_dir
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     {args.n_sample:,} per round (batch {args.sample_batch_size:,})")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
     print(f"  Ranking:     weighted degradation (most degraded unknowns first)")
+    print(f"  Alpha:       {args.degradation_alpha}")
+    print(f"  Init weights: gen={args.gen_weight}, branch={args.branch_weight}, bus={args.bus_weight}")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -167,6 +187,8 @@ def main():
         n_workers=args.n_workers,
         devices=multi_devices,
         rank_by_degradation=True,
+        degradation_alpha=args.degradation_alpha,
+        comp_weights_init=comp_weights_init,
         classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )
