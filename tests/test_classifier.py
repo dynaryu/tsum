@@ -473,3 +473,63 @@ class TestEndToEnd:
         surv_rules = json.loads(open(result["rules_surv_path"]).read())
         fail_rules = json.loads(open(result["rules_fail_path"]).read())
         assert len(surv_rules) > 0 or len(fail_rules) > 0
+
+    def test_sensitivity_prescreen(self):
+        """Test that sensitivity_prescreen runs and initialises weights."""
+        from tsum.tsum import run_rule_extraction_by_mcs
+
+        n_vars = 4
+        n_state = 2
+        threshold = 3
+
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        row_names = list(probs_dict.keys())
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        sfun = _make_sum_sfun(threshold=threshold)
+
+        result = run_rule_extraction_by_mcs(
+            sfun=sfun,
+            probs=probs_t,
+            row_names=row_names,
+            n_state=n_state,
+            sys_surv_st=1,
+            unk_prob_thres=1e-1,
+            unk_prob_opt="abs",
+            n_sample=100_000,
+            sample_batch_size=50_000,
+            rank_by_degradation=True,
+            sensitivity_prescreen=True,
+            output_dir="/tmp/test_sensitivity_prescreen",
+        )
+
+        assert len(result["metrics_log"]) > 0
+
+    def test_degradation_diversity(self):
+        """Test that diversity selection (probabilistic) works without error."""
+        from tsum.tsum import run_rule_extraction_by_mcs
+
+        n_vars = 4
+        n_state = 2
+        threshold = 3
+
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        row_names = list(probs_dict.keys())
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        sfun = _make_sum_sfun(threshold=threshold)
+
+        result = run_rule_extraction_by_mcs(
+            sfun=sfun,
+            probs=probs_t,
+            row_names=row_names,
+            n_state=n_state,
+            sys_surv_st=1,
+            unk_prob_thres=1e-1,
+            unk_prob_opt="abs",
+            n_sample=100_000,
+            sample_batch_size=50_000,
+            rank_by_degradation=True,
+            degradation_diversity=True,
+            output_dir="/tmp/test_degradation_diversity",
+        )
+
+        assert len(result["metrics_log"]) > 0

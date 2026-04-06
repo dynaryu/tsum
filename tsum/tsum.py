@@ -51,7 +51,14 @@ def _minimize_one_unknown(args):
 
     return min_comps_st, sys_st, fval
 
-# For use in mixted sorting 
+
+def _eval_sfun_worker(comps_st):
+    """Worker function for parallel sfun evaluation (no minimization)."""
+    fval, sys_st, _ = _MP_SFUN(comps_st)
+    return fval, sys_st
+
+
+# For use in mixted sorting
 try:
     import numpy as np
     _NUMPY_NUM = (np.integer, np.floating)
@@ -1968,6 +1975,8 @@ def run_rule_extraction_by_mcs(
     rank_by_degradation: bool = False,  # rank unknowns by weighted degradation (most degraded first)
     degradation_alpha: float = 3.0,  # exponential scaling factor for component weights
     comp_weights_init: Optional[Dict[str, float]] = None,  # per-component initial weights (e.g. generators=2.0)
+    sensitivity_prescreen: bool = False,  # run single-component sensitivity analysis to set initial weights
+    degradation_diversity: bool = True,  # sample proportional to score instead of top-k (avoids duplicate states)
     # Classifier-guided boundary search (legacy, rank_by_degradation is simpler and recommended)
     classifier_guided: bool = False,  # use monotone classifier to rank unknowns
     classifier_n_pretrain: int = 5000,  # initial sfun evaluations for classifier pre-training
@@ -2020,6 +2029,11 @@ def run_rule_extraction_by_mcs(
 
         score = sum( weight_i * (max_state - 1 - state_i) )
         Weights are exponentially scaled from sparsity-weighted rule importance.
+
+        When degradation_diversity is True, selection is probabilistic
+        (proportional to score) rather than deterministic top-k.  This avoids
+        picking near-duplicate highly-degraded states that all resolve to the
+        same outcome.
         """
         if _weights_dirty:
             _recompute_weights()
@@ -2029,8 +2043,16 @@ def run_rule_extraction_by_mcs(
         deg = (n_state - 1) - states  # (n_unk, n_vars)
         w = _comp_weights.to(deg.device)
         degradation = (w * deg).sum(dim=1)  # (n_unk,)
-        _, top_idx = torch.topk(degradation, n_pick)
-        return idx_unknown[top_idx]
+
+        if degradation_diversity and n_pick < len(idx_unknown):
+            # Sample without replacement, probability proportional to score
+            # Use softmax on scores as sampling weights
+            probs_sel = torch.softmax(degradation, dim=0)
+            chosen = torch.multinomial(probs_sel, n_pick, replacement=False)
+            return idx_unknown[chosen]
+        else:
+            _, top_idx = torch.topk(degradation, n_pick)
+            return idx_unknown[top_idx]
 
     # ---- initial state ----
     if rules_surv is None: rules_surv = []
@@ -2165,6 +2187,48 @@ def run_rule_extraction_by_mcs(
     # Search loops: capped for finding unknowns; full total_loops used only for probability estimation
     search_loops = min(max_search_loops, total_loops) if max_search_loops > 0 else total_loops
 
+    # ---- sensitivity pre-screen ----
+    if sensitivity_prescreen and rank_by_degradation:
+        print("Sensitivity pre-screen: evaluating single-component failures...")
+        _t_sens = time.perf_counter()
+        # Build baseline: all components at best state
+        best_state = {}
+        for name in row_names:
+            best_state[name] = n_state - 1
+        # Build tasks: each component individually at worst state (0)
+        sens_tasks = []
+        for name in row_names:
+            cst = dict(best_state)
+            cst[name] = 0
+            sens_tasks.append((cst, None))  # (comps_st, unused) matches _minimize_one_unknown signature
+
+        # Evaluate — use pool if available, else serial
+        if _pool is not None:
+            sens_results = _pool.starmap(
+                _eval_sfun_worker, [(cst,) for cst, _ in sens_tasks])
+        else:
+            sens_results = []
+            for cst, _ in sens_tasks:
+                fval, sys_st, _ = sfun(cst)
+                sens_results.append((fval, sys_st))
+
+        # Convert to importance: blackout % when component fails alone
+        sens_scores = torch.zeros(n_vars, dtype=torch.float32)
+        for i, (fval, sys_st) in enumerate(sens_results):
+            sens_scores[i] = float(fval) if isinstance(fval, (int, float)) else 0.0
+
+        # Normalize to [0, 1] and add to importance
+        s_max = sens_scores.max().item()
+        if s_max > 0:
+            sens_scores /= s_max
+        _comp_importance += sens_scores
+        _weights_dirty = True
+
+        _t_sens = time.perf_counter() - _t_sens
+        n_nonzero = int((sens_scores > 0).sum().item())
+        print(f"  Evaluated {n_vars} components in {_t_sens:.1f}s "
+              f"({n_nonzero} with nonzero impact, max blackout={s_max:.2f}%)")
+
     # ---- unknown ranking strategy ----
     _rank_mode = None  # None = random (default), "degradation", "classifier"
 
@@ -2183,6 +2247,8 @@ def run_rule_extraction_by_mcs(
         if comp_weights_init:
             n_init = sum(1 for c in comp_weights_init if c in _name_to_idx)
             print(f"  Per-component priors: {n_init} components initialized")
+        if degradation_diversity:
+            print("  Selection: probabilistic (proportional to degradation score)")
 
     _boundary_guide = None
     if classifier_guided:

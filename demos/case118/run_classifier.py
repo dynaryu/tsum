@@ -67,6 +67,10 @@ def parse_args():
                         help="Initial weight for branches (default: 1.5)")
     parser.add_argument("--bus-weight", type=float, default=1.0,
                         help="Initial weight for ordinary buses (default: 1.0)")
+    parser.add_argument("--no-sensitivity", action="store_true",
+                        help="Disable sensitivity pre-screen (enabled by default)")
+    parser.add_argument("--no-diversity", action="store_true",
+                        help="Use deterministic top-k instead of probabilistic selection")
     parser.add_argument("--output-dir", type=str, default="results_degradation",
                         help="Output directory (default: results_degradation)")
     return parser.parse_args()
@@ -169,6 +173,8 @@ def main():
     print(f"  Ranking:     weighted degradation (most degraded unknowns first)")
     print(f"  Alpha:       {args.degradation_alpha}")
     print(f"  Init weights: gen={args.gen_weight}, branch={args.branch_weight}, bus={args.bus_weight}")
+    print(f"  Sensitivity: {'disabled' if args.no_sensitivity else 'enabled'}")
+    print(f"  Diversity:   {'disabled (top-k)' if args.no_diversity else 'enabled (probabilistic)'}")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -189,6 +195,8 @@ def main():
         rank_by_degradation=True,
         degradation_alpha=args.degradation_alpha,
         comp_weights_init=comp_weights_init,
+        sensitivity_prescreen=not args.no_sensitivity,
+        degradation_diversity=not args.no_diversity,
         classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )
