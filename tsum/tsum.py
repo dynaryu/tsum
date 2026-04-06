@@ -1964,8 +1964,10 @@ def run_rule_extraction_by_mcs(
     max_search_loops: int = 0,  # max batches per round for searching unknowns (0 = use n_sample // sample_batch_size)
     min_rule_search: bool = True,
     rule_update_verbose: bool = True,
-    # Classifier-guided boundary search
-    classifier_guided: bool = False,  # use monotone classifier to guide sampling toward boundary
+    # Unknown ranking strategies (pick one)
+    rank_by_degradation: bool = False,  # rank unknowns by total degradation (most degraded first)
+    # Classifier-guided boundary search (legacy, rank_by_degradation is simpler and recommended)
+    classifier_guided: bool = False,  # use monotone classifier to rank unknowns
     classifier_n_pretrain: int = 5000,  # initial sfun evaluations for classifier pre-training
     classifier_retrain_every: int = 10,  # retrain classifier every N rounds
     classifier_shift_factor: float = 3.0,  # IS shift aggressiveness
@@ -2009,6 +2011,19 @@ def run_rule_extraction_by_mcs(
 
     def _save_pt(t: torch.Tensor, path: str) -> None:
         torch.save(t.detach().cpu(), path)
+
+    def _rank_by_degradation(samples: torch.Tensor, idx_unknown: torch.Tensor,
+                             n_pick: int) -> torch.Tensor:
+        """Rank unknowns by total degradation: sum of (max_state - 1 - state_i).
+
+        Most degraded states are most likely to be failures in a coherent system.
+        """
+        n_pick = min(n_pick, len(idx_unknown))
+        unk_samples = samples[idx_unknown]  # (n_unk, n_vars, n_state)
+        states = torch.argmax(unk_samples, dim=2)  # (n_unk, n_vars)
+        degradation = ((n_state - 1) - states).sum(dim=1)  # (n_unk,)
+        _, top_idx = torch.topk(degradation, n_pick)
+        return idx_unknown[top_idx]
 
     # ---- initial state ----
     if rules_surv is None: rules_surv = []
@@ -2067,9 +2082,16 @@ def run_rule_extraction_by_mcs(
     # Search loops: capped for finding unknowns; full total_loops used only for probability estimation
     search_loops = min(max_search_loops, total_loops) if max_search_loops > 0 else total_loops
 
-    # ---- classifier-guided unknown selection ----
+    # ---- unknown ranking strategy ----
+    _rank_mode = None  # None = random (default), "degradation", "classifier"
+
+    if rank_by_degradation:
+        _rank_mode = "degradation"
+        print("Degradation ranking: unknowns ranked by total degradation (most degraded first)")
+
     _boundary_guide = None
     if classifier_guided:
+        _rank_mode = "classifier"
         from tsum.classifier import BoundaryGuide
         _boundary_guide = BoundaryGuide(
             n_vars, n_state, probs, row_names, sfun,
@@ -2228,7 +2250,9 @@ def run_rule_extraction_by_mcs(
         if _pool is not None and min_rule_search:
             # ---- Parallel: pick up to n_workers unknowns and minimize concurrently ----
             n_pick = min(n_workers, len(idx_unknown))
-            if _boundary_guide is not None and _boundary_guide.fitted:
+            if _rank_mode == "degradation":
+                picked_indices = _rank_by_degradation(samples, idx_unknown, n_pick)
+            elif _rank_mode == "classifier" and _boundary_guide is not None and _boundary_guide.fitted:
                 picked_indices = _boundary_guide.rank_unknowns(samples, idx_unknown, n_pick)
             else:
                 perm = torch.randperm(len(idx_unknown))[:n_pick]
@@ -2276,7 +2300,10 @@ def run_rule_extraction_by_mcs(
 
         else:
             # ---- Serial (original): pick one unknown ----
-            if _boundary_guide is not None and _boundary_guide.fitted:
+            if _rank_mode == "degradation":
+                picked = _rank_by_degradation(samples, idx_unknown, 1)
+                rand_idx = picked[0].item()
+            elif _rank_mode == "classifier" and _boundary_guide is not None and _boundary_guide.fitted:
                 picked = _boundary_guide.rank_unknowns(samples, idx_unknown, 1)
                 rand_idx = picked[0].item()
             else:

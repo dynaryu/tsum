@@ -1,13 +1,10 @@
 """
-Run TSUM on IEEE 300-bus DC-OPF with classifier-guided unknown selection.
+Run TSUM on IEEE 300-bus DC-OPF with degradation-ranked unknown selection.
 
-Standard TSUM sampling discovers unknown states; a monotone classifier then
-ranks those unknowns by P(failure) so that the most failure-prone states are
-evaluated first.  This steers minimisation toward failure rules without
-altering the search-phase sampling distribution.
-
-Optionally seeds the classifier with pre-found failure rules (e.g. from
-k-fixed exhaustive search) to bootstrap the failure signal.
+Standard TSUM sampling discovers unknown states; unknowns are then ranked by
+total component degradation (most degraded first) so that failure-prone states
+are evaluated before survival-dominated ones.  This exploits system coherence
+(monotonicity) without any ML training.
 
 Components: 711 total (300 buses + 411 branches)
 System function: DC-OPF, blackout_threshold=26.1%
@@ -15,7 +12,6 @@ Reference: Chan et al. (2024), Table 2: p_f ~ 1.0e-4
 
 Usage:
     python run_classifier.py
-    python run_classifier.py --seed-rules path/to/seed_rules_fail.json
     python run_classifier.py --unk-prob-thres 1e-4 --n-workers 48
     python run_classifier.py --devices cuda:0,cuda:1
 """
@@ -43,26 +39,19 @@ from tsum import tsum
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Classifier-guided TSUM on IEEE 300-bus DC-OPF")
-    parser.add_argument("--unk-prob-thres", type=float, default=1e-5,
-                        help="Convergence threshold for unknown probability (default: 1e-5)")
-    parser.add_argument("--n-sample", type=int, default=1_000_000,
-                        help="Samples per round for probability estimation (default: 1000000)")
+        description="TSUM with degradation-ranked unknown selection on IEEE 300-bus DC-OPF")
+    parser.add_argument("--unk-prob-thres", type=float, default=1e-3,
+                        help="Convergence threshold for unknown probability (default: 1e-3)")
+    parser.add_argument("--n-sample", type=int, default=10_000_000,
+                        help="Samples per round for probability estimation (default: 10000000)")
     parser.add_argument("--sample-batch-size", type=int, default=100_000,
                         help="Batch size for GPU sampling (default: 100000)")
     parser.add_argument("--n-workers", type=int, default=1,
                         help="Parallel workers for sfun evaluation (default: 1)")
     parser.add_argument("--devices", type=str, default="",
                         help="Comma-separated GPU devices, e.g. 'cuda:0,cuda:1'")
-    # Classifier options
-    parser.add_argument("--classifier-n-pretrain", type=int, default=5000,
-                        help="Initial sfun evaluations for classifier pre-training (default: 5000)")
-    parser.add_argument("--classifier-retrain-every", type=int, default=10,
-                        help="Retrain classifier every N rounds (default: 10)")
-    parser.add_argument("--seed-rules", type=str, default="",
-                        help="Path to JSON file with failure rules to seed the classifier (from k-fixed search)")
-    parser.add_argument("--output-dir", type=str, default="results_classifier",
-                        help="Output directory (default: results_classifier)")
+    parser.add_argument("--output-dir", type=str, default="results_degradation",
+                        help="Output directory (default: results_degradation)")
     return parser.parse_args()
 
 
@@ -72,7 +61,7 @@ def main():
     multi_devices = device_list if len(device_list) > 1 else None
 
     print("=" * 60)
-    print("TSUM rule extraction with classifier-guided unknown selection")
+    print("TSUM rule extraction with degradation-ranked unknown selection")
     print("IEEE 300-bus DC-OPF")
     print("=" * 60)
 
@@ -134,27 +123,16 @@ def main():
     print(f"  All failed:      blackout={fval:.4f}%, sys_st={sys_st}")
 
     # ---------------------------------------------------------------
-    # 4. Run rule extraction with classifier-guided unknown selection
+    # 4. Run rule extraction with degradation-ranked unknown selection
     # ---------------------------------------------------------------
-    # Load seed failure rules if provided
-    seed_rules = None
-    if args.seed_rules:
-        seed_path = Path(args.seed_rules)
-        if not seed_path.is_absolute():
-            seed_path = HERE / seed_path
-        with open(seed_path) as f:
-            seed_rules = json.load(f)
-        print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
-
     output_dir = HERE / args.output_dir
     print(f"\n  Output:      {output_dir}")
     print(f"  Samples:     {args.n_sample:,} per round (batch {args.sample_batch_size:,})")
     print(f"  Convergence: unk_prob < {args.unk_prob_thres:.0e}")
-    print(f"  Classifier:  pretrain={args.classifier_n_pretrain}, "
-          f"retrain_every={args.classifier_retrain_every}")
+    print(f"  Ranking:     degradation (most degraded unknowns first)")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
-    print(f"\nStarting rule extraction with classifier-guided unknown selection...\n", flush=True)
+    print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
     result = tsum.run_rule_extraction_by_mcs(
@@ -169,10 +147,7 @@ def main():
         sample_batch_size=args.sample_batch_size,
         n_workers=args.n_workers,
         devices=multi_devices,
-        classifier_guided=True,
-        classifier_n_pretrain=args.classifier_n_pretrain,
-        classifier_retrain_every=args.classifier_retrain_every,
-        classifier_seed_rules=seed_rules,
+        rank_by_degradation=True,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
