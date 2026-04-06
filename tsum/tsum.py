@@ -2189,8 +2189,15 @@ def run_rule_extraction_by_mcs(
         _rank_mode = "degradation"
         print("Degradation ranking: unknowns ranked by weighted degradation (most degraded first)")
 
-        # Source 1: user-supplied per-component type priors
-        if comp_weights_init:
+        # comp_weights_init is a coarse type-based prior (e.g. gen=2.0,
+        # branch=1.5).  It only serves as a fallback when no data-driven
+        # signal is available.  When sensitivity or seed rules are provided
+        # they are strictly more informative, so we skip the prior to avoid
+        # diluting the signal (all 711 components at ~1.0 drowns out the
+        # 42 components highlighted by seed rules).
+        _has_data_signal = sensitivity_prescreen or bool(classifier_seed_rules)
+
+        if comp_weights_init and not _has_data_signal:
             unknown = [c for c in comp_weights_init if c not in _name_to_idx]
             if unknown:
                 import warnings
@@ -2210,9 +2217,12 @@ def run_rule_extraction_by_mcs(
             _comp_importance += init_scores
             _weights_dirty = True
             n_init = sum(1 for c in comp_weights_init if c in _name_to_idx)
-            print(f"  Per-component priors: {n_init} components initialized")
+            print(f"  Per-component priors: {n_init} components (fallback, no data-driven signal)")
+        elif comp_weights_init and _has_data_signal:
+            print(f"  Per-component priors: skipped (superseded by "
+                  f"{'sensitivity' if sensitivity_prescreen else 'seed rules'})")
 
-        # Source 2: sensitivity pre-screen (single-component failures)
+        # Sensitivity pre-screen (single-component failures)
         if sensitivity_prescreen:
             print("  Sensitivity pre-screen: evaluating single-component failures...")
             _t_sens = time.perf_counter()
