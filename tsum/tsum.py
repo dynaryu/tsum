@@ -2079,7 +2079,17 @@ def run_rule_extraction_by_mcs(
     _name_to_idx = {name: i for i, name in enumerate(row_names)}
     _weights_dirty = False
 
-    # Apply user-supplied per-component initial weights
+    # Apply user-supplied per-component initial weights.
+    # When seed rules are provided, comp_weights_init is only used as a weak
+    # secondary signal for components NOT covered by the seed rules, so that
+    # the seed signal dominates the importance ranking.
+    _seeded_components = set()
+    if classifier_seed_rules:
+        for rule in classifier_seed_rules:
+            for comp in rule:
+                if comp != "sys" and comp in _name_to_idx:
+                    _seeded_components.add(_name_to_idx[comp])
+
     if comp_weights_init:
         unknown = [c for c in comp_weights_init if c not in _name_to_idx]
         if unknown:
@@ -2091,10 +2101,21 @@ def run_rule_extraction_by_mcs(
         for comp, w in comp_weights_init.items():
             idx = _name_to_idx.get(comp)
             if idx is not None:
-                _comp_importance[idx] += w
+                if idx in _seeded_components:
+                    # Seeded components get only 10% of the per-type weight
+                    # so seed rules dominate the importance ranking.
+                    _comp_importance[idx] += w * 0.1
+                else:
+                    _comp_importance[idx] += w
 
     # Threshold for renormalising _comp_importance to avoid unbounded growth
     _IMPORTANCE_RENORM_THRESHOLD = 1e6
+
+    # Apply seed rules FIRST so they dominate the importance ranking.
+    # These represent pre-discovered minimum cut sets.
+    if classifier_seed_rules:
+        _update_comp_importance(classifier_seed_rules, is_failure=True)
+        _weights_dirty = True
 
     def _update_comp_importance(rule_dicts: list, is_failure: bool):
         """Accumulate sparsity-weighted importance from new rules.
@@ -2217,11 +2238,14 @@ def run_rule_extraction_by_mcs(
         for i, (fval, sys_st) in enumerate(sens_results):
             sens_scores[i] = float(fval) if isinstance(fval, (int, float)) else 0.0
 
-        # Normalize to [0, 1] and add to importance
+        # Normalize to [0, 1] and add to importance.
+        # Only contribute to components NOT in seed rules, so seeds dominate.
         s_max = sens_scores.max().item()
         if s_max > 0:
             sens_scores /= s_max
-        _comp_importance += sens_scores
+        for i in range(n_vars):
+            if i not in _seeded_components:
+                _comp_importance[i] += sens_scores[i]
         _weights_dirty = True
 
         _t_sens = time.perf_counter() - _t_sens
@@ -2235,7 +2259,6 @@ def run_rule_extraction_by_mcs(
     if rank_by_degradation:
         _rank_mode = "degradation"
         if classifier_seed_rules:
-            _update_comp_importance(classifier_seed_rules, is_failure=True)
             _recompute_weights()
             n_seeded = len(classifier_seed_rules)
             n_comps_weighted = int((_comp_importance > 0).sum().item())
