@@ -2085,7 +2085,7 @@ def run_rule_extraction_by_mcs(
         When accumulated importance exceeds a threshold, it is renormalised
         to avoid numerical precision loss in float32.
         """
-        nonlocal _weights_dirty
+        nonlocal _weights_dirty, _comp_importance
         for rule in rule_dicts:
             n_conds = sum(1 for k in rule if k != "sys")
             if n_conds == 0:
