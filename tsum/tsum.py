@@ -2465,12 +2465,13 @@ def run_rule_extraction_by_mcs(
         n_sample_actual = sample_batch_size * (i + 1)
         samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
         # When IS sampling is active, the search-phase counts are biased
-        # (over-represent failures/unknowns).  Don't pollute last_probs with
-        # them — keep the previous round's unbiased estimate.  unk_prob is
-        # still updated as a rough upper bound so the while-loop guard does
-        # not falsely terminate; the periodic full estimate will refresh it.
+        # (over-represent failures/unknowns) and useless for convergence.
+        # Use the last unbiased estimate from the periodic full update.
+        # last_probs starts at {"unknown": 1.0}, so the first round before
+        # any full estimate will not falsely terminate.  Convergence is
+        # entirely driven by the periodic full estimate (prob_update_every).
         if _is_probs is not None:
-            unk_prob = max(samp_probs["unknown"], last_probs.get("unknown", 1.0))
+            unk_prob = last_probs.get("unknown", 1.0)
         else:
             unk_prob = samp_probs["unknown"]
             last_probs.update(samp_probs)
