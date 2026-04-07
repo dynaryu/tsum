@@ -1967,6 +1967,13 @@ def run_rule_extraction_by_mcs(
     # Parallelism
     n_workers: int = 1,  # number of CPU workers for parallel sfun + minimization
     devices: Optional[List[str]] = None,  # list of GPU devices for multi-GPU sampling, e.g. ["cuda:0", "cuda:1"]
+    # Subset Simulation (Au & Beck 2001) — alternate search-phase sampler
+    use_subset_sim: bool = False,
+    sus_p0: float = 0.1,
+    sus_n_per_level: int = 1000,
+    sus_max_levels: int = 10,
+    sus_n_flip_mean: float = 5.0,
+    sus_severity_sign: int = +1,
     # Output control
     output_dir: str = "tsum_res",
     surv_json_name: str = None,
@@ -2037,9 +2044,18 @@ def run_rule_extraction_by_mcs(
         _MP_SFUN = sfun
         _MP_SYS_SURV_ST = sys_surv_st
         _MP_N_STATE = n_state
+        # Subset-Simulation worker state must also be set BEFORE fork so that
+        # forked workers inherit it. Cheap and harmless when SuS is off.
+        if use_subset_sim:
+            from tsum import subset_sim as _sus_mod
+            _sus_mod.set_worker_state(sfun, row_names, sys_surv_st)
         _ctx = mp.get_context('fork')
         _pool = _ctx.Pool(n_workers)
         print(f"Parallel mode: {n_workers} CPU workers for sfun + minimization")
+    elif use_subset_sim:
+        # Serial path: set globals so the in-process worker function can find sfun.
+        from tsum import subset_sim as _sus_mod
+        _sus_mod.set_worker_state(sfun, row_names, sys_surv_st)
 
     # ---- multi-GPU setup ----
     _use_multi_gpu = False
@@ -2081,51 +2097,125 @@ def run_rule_extraction_by_mcs(
         _t_probs = 0.0
 
         _ts = time.perf_counter()
-        for i in range(search_loops):
-            if _use_multi_gpu:
-                # Split batch across GPUs, sample + classify in parallel threads
-                n_gpus = len(_gpu_devices)
-                per_gpu = sample_batch_size // n_gpus
-                remainder = sample_batch_size % n_gpus
-                tasks = []
-                for gi in range(n_gpus):
-                    n_gi = per_gpu + (1 if gi < remainder else 0)
-                    rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
-                    rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
-                    tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, True))
+        if use_subset_sim:
+            # ---- Subset Simulation search phase ----
+            from tsum import subset_sim as _sus_mod
+            sus_res = _sus_mod.subset_sim_search(
+                probs=probs,
+                sfun=sfun,
+                row_names=row_names,
+                sys_surv_st=sys_surv_st,
+                n_per_level=sus_n_per_level,
+                p0=sus_p0,
+                max_levels=sus_max_levels,
+                severity_sign=sus_severity_sign,
+                n_flip_mean=sus_n_flip_mean,
+                pool=_pool,
+                verbose=True,
+            )
 
-                futures = list(_gpu_thread_pool.map(_sample_and_classify_on_device, tasks))
+            failed_states = sus_res['failed_states']  # (M, n_var) int
+            M = int(failed_states.shape[0])
 
-                # Merge results back to primary device
-                all_samples = []
-                for samples_gi, res_gi in futures:
-                    all_samples.append(samples_gi.to(device))
-                    counts["survival"] += int(res_gi["survival"])
-                    counts["failure"]  += int(res_gi["failure"])
-                    counts["unknown"]  += int(res_gi["unknown"])
-                samples = torch.cat(all_samples, dim=0)
-
-                # Re-classify merged batch on primary device for correct indices
-                res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
+            if M == 0:
+                # No failures found by SuS — leave is_new_cand False so the
+                # outer loop falls into the periodic prob-update branch.
+                samples = torch.zeros((0, n_vars, n_state), dtype=torch.int32, device=device)
+                res = {'idx_unknown': torch.empty(0, dtype=torch.long, device=device)}
+                i = 0
             else:
-                samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
-                res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
+                # One-hot encode failed states for the existing classify/minimize pipeline
+                fs_dev = failed_states.to(device=device, dtype=torch.int64)
+                samples = torch.zeros((M, n_vars, n_state), dtype=torch.int32, device=device)
+                samples.scatter_(2, fs_dev.unsqueeze(-1), 1)
 
-                counts["survival"] += int(res["survival"])
-                counts["failure"]  += int(res["failure"])
-                counts["unknown"]  += int(res["unknown"])
+                res = classify_samples_with_indices(
+                    samples, rules_mat_surv, rules_mat_fail, return_masks=True
+                )
+                if res['idx_unknown'].numel() > 0:
+                    is_new_cand = True
+                # Counts from SuS are biased; we'll refresh unk_prob from a
+                # separate prior MC sweep below, so do not update last_probs here.
+                counts['unknown'] += int(res['idx_unknown'].numel())
+                counts['failure'] += int(M - res['idx_unknown'].numel())
+                i = 0  # single SuS "loop" for metrics
+        else:
+            for i in range(search_loops):
+                if _use_multi_gpu:
+                    # Split batch across GPUs, sample + classify in parallel threads
+                    n_gpus = len(_gpu_devices)
+                    per_gpu = sample_batch_size // n_gpus
+                    remainder = sample_batch_size % n_gpus
+                    tasks = []
+                    for gi in range(n_gpus):
+                        n_gi = per_gpu + (1 if gi < remainder else 0)
+                        rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
+                        rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
+                        tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, True))
 
-            if res['idx_unknown'].numel() > 0:
-                is_new_cand = True
-                break
+                    futures = list(_gpu_thread_pool.map(_sample_and_classify_on_device, tasks))
+
+                    # Merge results back to primary device
+                    all_samples = []
+                    for samples_gi, res_gi in futures:
+                        all_samples.append(samples_gi.to(device))
+                        counts["survival"] += int(res_gi["survival"])
+                        counts["failure"]  += int(res_gi["failure"])
+                        counts["unknown"]  += int(res_gi["unknown"])
+                    samples = torch.cat(all_samples, dim=0)
+
+                    # Re-classify merged batch on primary device for correct indices
+                    res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
+                else:
+                    samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
+                    res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
+
+                    counts["survival"] += int(res["survival"])
+                    counts["failure"]  += int(res["failure"])
+                    counts["unknown"]  += int(res["unknown"])
+
+                if res['idx_unknown'].numel() > 0:
+                    is_new_cand = True
+                    break
 
         _t_search = time.perf_counter() - _ts
 
-        # denominator = number of samples actually processed
-        n_sample_actual = sample_batch_size * (i + 1)
-        samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
-        unk_prob = samp_probs["unknown"]
-        last_probs.update(samp_probs)
+        if use_subset_sim:
+            # SuS counts are biased by the level chain — do not derive unk_prob
+            # from them. Force a fresh prior-MC sweep to get an unbiased estimate.
+            n_sample_actual = int(samples.shape[0]) if samples is not None else 0
+            loops = max(n_sample // sample_batch_size, 1)
+            c2 = {"survival": 0, "failure": 0, "unknown": 0}
+            for _ in range(loops):
+                if _use_multi_gpu:
+                    n_gpus = len(_gpu_devices)
+                    per_gpu = sample_batch_size // n_gpus
+                    remainder = sample_batch_size % n_gpus
+                    tasks = []
+                    for gi in range(n_gpus):
+                        n_gi = per_gpu + (1 if gi < remainder else 0)
+                        rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
+                        rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
+                        tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, False))
+                    for _, ci in _gpu_thread_pool.map(_sample_and_classify_on_device, tasks):
+                        for k in c2:
+                            c2[k] += ci[k]
+                else:
+                    s = sample_categorical(probs, sample_batch_size)
+                    ci = classify_samples(s, rules_mat_surv, rules_mat_fail)
+                    for k in c2:
+                        c2[k] += ci[k]
+            samp_probs = {k: v / (sample_batch_size * loops) for k, v in c2.items()}
+            unk_prob = samp_probs["unknown"]
+            last_probs.update(samp_probs)
+            print(f"[SuS] Unbiased probs: surv={samp_probs['survival']:.3e}, "
+                  f"fail={samp_probs['failure']:.3e}, unk={samp_probs['unknown']:.3e}")
+        else:
+            # denominator = number of samples actually processed
+            n_sample_actual = sample_batch_size * (i + 1)
+            samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
+            unk_prob = samp_probs["unknown"]
+            last_probs.update(samp_probs)
 
         # If no unknowns found, skip candidate creation and continue to periodic update / exit
         if not is_new_cand:
