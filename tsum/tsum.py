@@ -302,7 +302,7 @@ def minimise_fail_states_random(
     return min_rule, info
 
 
-def from_rule_dict_to_mat(rule_dict, row_names, max_st):
+def from_rule_dict_to_mat(rule_dict, row_names, max_st, device=None):
     """
     Convert a rule dictionary to a matrix representation.
 
@@ -310,12 +310,13 @@ def from_rule_dict_to_mat(rule_dict, row_names, max_st):
         rule_dict (dict): {name: ('comparison_operator', state (int))}
         row_names (list): list of component names associated with each row in order
         max_st (int): the highest state
-
+        device: torch device for the output tensor (defaults None)
     Returns:
         mat (list): binary matrix with shape (n_comp, max_st)
 
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     mat = torch.zeros((len(row_names), max_st), dtype=torch.int32, device=device)
 
     for row, name in enumerate(row_names):  
@@ -1269,7 +1270,7 @@ def mask_from_first_one(
 
 def update_rules(min_comps_st, rules_dict, rules_mat, row_names, verbose=False):
     _, _, n_state = rules_mat.shape
-    Rnew = from_rule_dict_to_mat(min_comps_st, row_names, n_state)
+    Rnew = from_rule_dict_to_mat(min_comps_st, row_names, n_state, device=rules_mat.device)
     is_Rnew_subset, are_Rset_subset = is_subset(Rnew, rules_mat)
 
     if is_Rnew_subset:
@@ -1311,7 +1312,7 @@ def update_rules_batch(new_rules_dicts, rules_dict, rules_mat, row_names, verbos
     # Step 1: convert all new rules to matrices
     new_mats = []
     for rd in new_rules_dicts:
-        new_mats.append(from_rule_dict_to_mat(rd, row_names, n_state))
+        new_mats.append(from_rule_dict_to_mat(rd, row_names, n_state, device=device))
     new_batch = torch.stack(new_mats, dim=0)  # (N_new, n_var, n_state)
     n_new = new_batch.shape[0]
 
@@ -2099,6 +2100,8 @@ def run_rule_extraction_by_mcs(
         _ts = time.perf_counter()
         if use_subset_sim:
             # ---- Subset Simulation search phase ----
+            # Worker state for the SuS module was set above (BEFORE the fork)
+            # so the existing _pool's workers already inherit _SUS_SFUN etc.
             from tsum import subset_sim as _sus_mod
             sus_res = _sus_mod.subset_sim_search(
                 probs=probs,
@@ -2116,6 +2119,9 @@ def run_rule_extraction_by_mcs(
 
             failed_states = sus_res['failed_states']  # (M, n_var) int
             M = int(failed_states.shape[0])
+            _sus_n_levels = int(sus_res.get('n_levels', 0))
+            _sus_n_sfun = int(sus_res.get('n_sfun_calls', 0))
+            _sus_terminated_by = sus_res.get('terminated_by', '')
 
             if M == 0:
                 # No failures found by SuS — leave is_new_cand False so the
@@ -2124,20 +2130,30 @@ def run_rule_extraction_by_mcs(
                 res = {'idx_unknown': torch.empty(0, dtype=torch.long, device=device)}
                 i = 0
             else:
-                # One-hot encode failed states for the existing classify/minimize pipeline
+                # One-hot encode failed states for the existing minimize pipeline.
                 fs_dev = failed_states.to(device=device, dtype=torch.int64)
                 samples = torch.zeros((M, n_vars, n_state), dtype=torch.int32, device=device)
                 samples.scatter_(2, fs_dev.unsqueeze(-1), 1)
 
-                res = classify_samples_with_indices(
+                # Diagnostic classification against existing rules (for counts only).
+                res_cls = classify_samples_with_indices(
                     samples, rules_mat_surv, rules_mat_fail, return_masks=True
                 )
-                if res['idx_unknown'].numel() > 0:
-                    is_new_cand = True
-                # Counts from SuS are biased; we'll refresh unk_prob from a
-                # separate prior MC sweep below, so do not update last_probs here.
-                counts['unknown'] += int(res['idx_unknown'].numel())
-                counts['failure'] += int(M - res['idx_unknown'].numel())
+                n_already_covered = M - int(res_cls['idx_unknown'].numel())
+
+                # Feed *all* SuS failure samples to minimisation, not just the
+                # ones not yet covered by rules_mat_fail. SuS produces samples
+                # that are sfun-confirmed failures, and a sample already covered
+                # by one rule may still yield a different non-dominant minimal
+                # rule. update_rules' dominance check drops dominated results.
+                idx_all = torch.arange(M, dtype=torch.long, device=device)
+                res = {'idx_unknown': idx_all}
+                is_new_cand = True
+
+                # Counts are biased — used only for the metrics row; unk_prob is
+                # refreshed via a separate prior-MC sweep on prob-update rounds.
+                counts['unknown'] += int(res_cls['idx_unknown'].numel())
+                counts['failure'] += int(n_already_covered)
                 i = 0  # single SuS "loop" for metrics
         else:
             for i in range(search_loops):
@@ -2181,35 +2197,44 @@ def run_rule_extraction_by_mcs(
         _t_search = time.perf_counter() - _ts
 
         if use_subset_sim:
-            # SuS counts are biased by the level chain — do not derive unk_prob
-            # from them. Force a fresh prior-MC sweep to get an unbiased estimate.
+            # SuS counts are biased by the level chain — never derive unk_prob
+            # from them. Refresh the unbiased estimate via a prior-MC sweep,
+            # but only on prob-update rounds (matching the non-SuS cadence).
+            # On other rounds, keep last_probs unchanged.
             n_sample_actual = int(samples.shape[0]) if samples is not None else 0
-            loops = max(n_sample // sample_batch_size, 1)
-            c2 = {"survival": 0, "failure": 0, "unknown": 0}
-            for _ in range(loops):
-                if _use_multi_gpu:
-                    n_gpus = len(_gpu_devices)
-                    per_gpu = sample_batch_size // n_gpus
-                    remainder = sample_batch_size % n_gpus
-                    tasks = []
-                    for gi in range(n_gpus):
-                        n_gi = per_gpu + (1 if gi < remainder else 0)
-                        rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
-                        rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
-                        tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, False))
-                    for _, ci in _gpu_thread_pool.map(_sample_and_classify_on_device, tasks):
+            sus_needs_refresh = (n_round == 1) or ((n_round % prob_update_every) == 0)
+            if sus_needs_refresh:
+                loops = max(n_sample // sample_batch_size, 1)
+                c2 = {"survival": 0, "failure": 0, "unknown": 0}
+                for _ in range(loops):
+                    if _use_multi_gpu:
+                        n_gpus = len(_gpu_devices)
+                        per_gpu = sample_batch_size // n_gpus
+                        remainder = sample_batch_size % n_gpus
+                        tasks = []
+                        for gi in range(n_gpus):
+                            n_gi = per_gpu + (1 if gi < remainder else 0)
+                            rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
+                            rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
+                            tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, False))
+                        for _, ci in _gpu_thread_pool.map(_sample_and_classify_on_device, tasks):
+                            for k in c2:
+                                c2[k] += ci[k]
+                    else:
+                        s = sample_categorical(probs, sample_batch_size)
+                        ci = classify_samples(s, rules_mat_surv, rules_mat_fail)
                         for k in c2:
                             c2[k] += ci[k]
-                else:
-                    s = sample_categorical(probs, sample_batch_size)
-                    ci = classify_samples(s, rules_mat_surv, rules_mat_fail)
-                    for k in c2:
-                        c2[k] += ci[k]
-            samp_probs = {k: v / (sample_batch_size * loops) for k, v in c2.items()}
-            unk_prob = samp_probs["unknown"]
-            last_probs.update(samp_probs)
-            print(f"[SuS] Unbiased probs: surv={samp_probs['survival']:.3e}, "
-                  f"fail={samp_probs['failure']:.3e}, unk={samp_probs['unknown']:.3e}")
+                samp_probs = {k: v / (sample_batch_size * loops) for k, v in c2.items()}
+                unk_prob = samp_probs["unknown"]
+                last_probs.update(samp_probs)
+                print(f"[SuS] Unbiased probs (refresh @ round {n_round}): "
+                      f"surv={samp_probs['survival']:.3e}, "
+                      f"fail={samp_probs['failure']:.3e}, "
+                      f"unk={samp_probs['unknown']:.3e}")
+            else:
+                # Carry forward the last unbiased estimate.
+                unk_prob = last_probs.get("unknown", 1.0)
         else:
             # denominator = number of samples actually processed
             n_sample_actual = sample_batch_size * (i + 1)
@@ -2257,7 +2282,7 @@ def run_rule_extraction_by_mcs(
             # metrics, persist, then break condition handled by while guard
             dt = time.perf_counter() - t0
             rss_gb = psutil.Process().memory_info().rss / (1024**3)
-            metrics_log.append({
+            _entry = {
                 "round": n_round,
                 "time_sec": dt,
                 "t_search": round(_t_search, 3),
@@ -2274,7 +2299,12 @@ def run_rule_extraction_by_mcs(
                 "avg_len_surv": _avg_rule_len(rules_surv),
                 "avg_len_fail": _avg_rule_len(rules_fail),
                 "rss_gb": rss_gb,
-            })
+            }
+            if use_subset_sim:
+                _entry["sus_n_levels"] = _sus_n_levels
+                _entry["sus_n_sfun_calls"] = _sus_n_sfun
+                _entry["sus_terminated_by"] = _sus_terminated_by
+            metrics_log.append(_entry)
 
             if (n_round % save_every) == 0:
                 with open(metrics_path, "a", encoding="utf-8") as mf:
@@ -2422,7 +2452,7 @@ def run_rule_extraction_by_mcs(
         _t_probs = time.perf_counter() - _ts
         rss_gb = psutil.Process().memory_info().rss / (1024**3)
         dt = time.perf_counter() - t0
-        metrics_log.append({
+        _entry = {
             "round": n_round,
             "time_sec": dt,
             "t_search": round(_t_search, 3),
@@ -2439,7 +2469,12 @@ def run_rule_extraction_by_mcs(
             "avg_len_surv": _avg_rule_len(rules_surv),
             "avg_len_fail": _avg_rule_len(rules_fail),
             "rss_gb": rss_gb,
-        })
+        }
+        if use_subset_sim:
+            _entry["sus_n_levels"] = _sus_n_levels
+            _entry["sus_n_sfun_calls"] = _sus_n_sfun
+            _entry["sus_terminated_by"] = _sus_terminated_by
+        metrics_log.append(_entry)
 
         if (n_round % save_every) == 0:
             with open(metrics_path, "a", encoding="utf-8") as mf:
