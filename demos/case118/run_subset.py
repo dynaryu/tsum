@@ -58,6 +58,8 @@ def parse_args():
                    help="Cap on number of SuS levels (default: 10)")
     p.add_argument("--sus-n-flip-mean", type=float, default=5.0,
                    help="Average components perturbed per CWM-H step (default: 5.0)")
+    p.add_argument("--sus-surv-mc-samples", type=int, default=1000,
+                   help="Extra prior-MC samples per round for survival-rule mining (default: 1000, 0 = off)")
     p.add_argument("--output-dir", type=str, default="results_subset",
                    help="Output directory under demos/case118/ (default: results_subset)")
     return p.parse_args()
@@ -144,6 +146,7 @@ def main():
     print(f"  N per level:      {args.sus_n_per_level}")
     print(f"  max levels:       {args.sus_max_levels}")
     print(f"  n_flip_mean:      {args.sus_n_flip_mean}")
+    print(f"  surv MC samples:  {args.sus_surv_mc_samples} (per round, 0=off)")
     print(f"  prob_update_every: {args.prob_update_every} rounds")
     print(f"\n  severity_sign:    +1 (higher blackout %% = more failed)")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -169,6 +172,7 @@ def main():
         sus_max_levels=args.sus_max_levels,
         sus_n_flip_mean=args.sus_n_flip_mean,
         sus_severity_sign=+1,
+        sus_surv_mc_samples=args.sus_surv_mc_samples,
         output_dir=output_dir,
     )
     elapsed = time.time() - t0

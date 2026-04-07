@@ -1975,6 +1975,7 @@ def run_rule_extraction_by_mcs(
     sus_max_levels: int = 10,
     sus_n_flip_mean: float = 5.0,
     sus_severity_sign: int = +1,
+    sus_surv_mc_samples: int = 1000,  # extra prior-MC sweep for survival-rule mining
     # Output control
     output_dir: str = "tsum_res",
     surv_json_name: str = None,
@@ -2155,6 +2156,30 @@ def run_rule_extraction_by_mcs(
                 counts['unknown'] += int(res_cls['idx_unknown'].numel())
                 counts['failure'] += int(n_already_covered)
                 i = 0  # single SuS "loop" for metrics
+
+            # ---- Survival-focused prior MC sweep ----
+            # SuS drives samples into the failure tail, so survival rules
+            # never get mined from SuS samples alone. Do a small prior MC
+            # pass and append any unknown samples to the minimization queue.
+            if sus_surv_mc_samples > 0:
+                surv_samples = sample_categorical(probs, sus_surv_mc_samples)
+                surv_res = classify_samples_with_indices(
+                    surv_samples, rules_mat_surv, rules_mat_fail, return_masks=True
+                )
+                n_surv_unk = int(surv_res['idx_unknown'].numel())
+                if n_surv_unk > 0:
+                    is_new_cand = True
+                    offset = int(samples.shape[0])
+                    new_idx = surv_res['idx_unknown'].to(device=device) + offset
+                    samples = torch.cat([samples, surv_samples], dim=0)
+                    cur_idx = res['idx_unknown']
+                    if cur_idx.numel() > 0:
+                        res['idx_unknown'] = torch.cat([cur_idx, new_idx])
+                    else:
+                        res['idx_unknown'] = new_idx
+                counts['survival'] += int(surv_res['survival'])
+                counts['failure']  += int(surv_res['failure'])
+                counts['unknown']  += n_surv_unk
         else:
             for i in range(search_loops):
                 if _use_multi_gpu:
