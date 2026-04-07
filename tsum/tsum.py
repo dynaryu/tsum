@@ -1977,6 +1977,10 @@ def run_rule_extraction_by_mcs(
     comp_weights_init: Optional[Dict[str, float]] = None,  # per-component initial weights (e.g. generators=2.0)
     sensitivity_prescreen: bool = False,  # run single-component sensitivity analysis to set initial weights
     degradation_diversity: bool = True,  # sample proportional to score instead of top-k (avoids duplicate states)
+    is_sampling: bool = False,  # importance sampling: shift search-phase samples toward degraded states
+    is_shift_factor: float = 3.0,  # IS aggressiveness (per-component shift = factor * normalized_weight)
+    is_mix_original: float = 0.3,  # fraction of original distribution mixed in for exploration
+    is_rebuild_every: int = 20,  # rebuild biased distribution every N rounds (weights evolve)
     # Classifier-guided boundary search (legacy, rank_by_degradation is simpler and recommended)
     classifier_guided: bool = False,  # use monotone classifier to rank unknowns
     classifier_n_pretrain: int = 5000,  # initial sfun evaluations for classifier pre-training
@@ -2053,6 +2057,54 @@ def run_rule_extraction_by_mcs(
         else:
             _, top_idx = torch.topk(degradation, n_pick)
             return idx_unknown[top_idx]
+
+    def _build_is_probs(orig_probs: torch.Tensor) -> torch.Tensor:
+        """Build importance-sampling distribution that shifts mass toward
+        degraded states for components with high importance weights.
+
+        For each component i, mass is multiplied by exp(shift_i * (max_s - s))
+        where shift_i scales with that component's normalized weight, then
+        mixed with the original distribution for exploration.
+
+        Used only in the search phase for finding failure-prone unknowns
+        faster.  Does NOT affect periodic or final probability estimates,
+        which always use the original `probs`.
+        """
+        nv, ns = orig_probs.shape
+        orig = orig_probs.detach().cpu().numpy().astype(np.float64)
+        w = _comp_weights.detach().cpu().numpy().astype(np.float64)
+        w_max = float(w.max()) if w.size else 0.0
+
+        shifted = np.empty_like(orig)
+        for i in range(nv):
+            row = orig[i].copy()
+            row_sum = row.sum()
+            if row_sum > 0:
+                row /= row_sum
+
+            # Per-component shift proportional to its weight
+            if w_max > 0:
+                comp_shift = is_shift_factor * (w[i] / w_max)
+            else:
+                comp_shift = is_shift_factor
+
+            # Reweight states: lower states (more degraded) get more mass
+            n_active = int((row > 0).sum())
+            max_s = max(n_active - 1, 0)
+            state_w = np.array([np.exp(comp_shift * (max_s - s)) for s in range(ns)])
+            row_shifted = row * state_w
+            rs = row_shifted.sum()
+            if rs > 0:
+                row_shifted /= rs
+            else:
+                row_shifted = row.copy()
+
+            # Mix with original for exploration
+            shifted[i] = (1.0 - is_mix_original) * row_shifted + is_mix_original * row
+            shifted[i] = np.clip(shifted[i], 1e-10, None)
+            shifted[i] /= shifted[i].sum()
+
+        return torch.tensor(shifted, dtype=orig_probs.dtype, device=orig_probs.device)
 
     # ---- initial state ----
     if rules_surv is None: rules_surv = []
@@ -2295,6 +2347,27 @@ def run_rule_extraction_by_mcs(
         if degradation_diversity:
             print("  Selection: probabilistic (proportional to degradation score)")
 
+    # ---- importance sampling for the search phase ----
+    # When enabled, the search phase samples from a biased distribution that
+    # concentrates mass on degraded states for high-importance components.
+    # Periodic and final probability estimates always use the original probs.
+    _is_probs = None
+    _is_gpu_probs = []  # per-device replicas (multi-GPU only)
+    if is_sampling and rank_by_degradation:
+        if _comp_importance.sum().item() == 0:
+            print("IS sampling: skipped (no nonzero component importance — provide seeds, "
+                  "sensitivity prescreen, or comp_weights_init)")
+        else:
+            _is_probs = _build_is_probs(probs)
+            if _use_multi_gpu:
+                _is_gpu_probs = [_is_probs.to(d) for d in _gpu_devices]
+            shifted_max = _is_probs.max().item()
+            shifted_min = _is_probs.min().item()
+            print(f"IS sampling: search phase biased toward degraded states "
+                  f"(shift={is_shift_factor}, mix={is_mix_original}, "
+                  f"prob_range=[{shifted_min:.2e}, {shifted_max:.2e}])")
+            print(f"  Rebuild every {is_rebuild_every} rounds as weights evolve")
+
     _boundary_guide = None
     if classifier_guided:
         _rank_mode = "classifier"
@@ -2332,6 +2405,21 @@ def run_rule_extraction_by_mcs(
         _t_rules = 0.0
         _t_probs = 0.0
 
+        # Periodically rebuild the IS distribution as component weights evolve.
+        # Weights only matter for IS sampling (search phase) — periodic and final
+        # estimates always use the original `probs`.
+        if (_is_probs is not None and n_round > 1
+                and (n_round - 1) % is_rebuild_every == 0):
+            if _weights_dirty:
+                _recompute_weights()
+            _is_probs = _build_is_probs(probs)
+            if _use_multi_gpu:
+                _is_gpu_probs = [_is_probs.to(d) for d in _gpu_devices]
+
+        # Choose the sampling distribution for the search phase
+        _search_probs = _is_probs if _is_probs is not None else probs
+        _search_gpu_probs = _is_gpu_probs if _is_probs is not None else _gpu_probs
+
         _ts = time.perf_counter()
         for i in range(search_loops):
             if _use_multi_gpu:
@@ -2344,7 +2432,7 @@ def run_rule_extraction_by_mcs(
                     n_gi = per_gpu + (1 if gi < remainder else 0)
                     rules_s_gi = rules_mat_surv.to(_gpu_devices[gi])
                     rules_f_gi = rules_mat_fail.to(_gpu_devices[gi])
-                    tasks.append((_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, True))
+                    tasks.append((_search_gpu_probs[gi], n_gi, rules_s_gi, rules_f_gi, True))
 
                 futures = list(_gpu_thread_pool.map(_sample_and_classify_on_device, tasks))
 
@@ -2360,7 +2448,7 @@ def run_rule_extraction_by_mcs(
                 # Re-classify merged batch on primary device for correct indices
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
             else:
-                samples = sample_categorical(probs, sample_batch_size)  # (B, n_var, n_state)
+                samples = sample_categorical(_search_probs, sample_batch_size)  # (B, n_var, n_state)
                 res = classify_samples_with_indices(samples, rules_mat_surv, rules_mat_fail, return_masks=True)
 
                 counts["survival"] += int(res["survival"])
@@ -2376,8 +2464,16 @@ def run_rule_extraction_by_mcs(
         # denominator = number of samples actually processed
         n_sample_actual = sample_batch_size * (i + 1)
         samp_probs = {k: v / n_sample_actual for k, v in counts.items()}
-        unk_prob = samp_probs["unknown"]
-        last_probs.update(samp_probs)
+        # When IS sampling is active, the search-phase counts are biased
+        # (over-represent failures/unknowns).  Don't pollute last_probs with
+        # them — keep the previous round's unbiased estimate.  unk_prob is
+        # still updated as a rough upper bound so the while-loop guard does
+        # not falsely terminate; the periodic full estimate will refresh it.
+        if _is_probs is not None:
+            unk_prob = max(samp_probs["unknown"], last_probs.get("unknown", 1.0))
+        else:
+            unk_prob = samp_probs["unknown"]
+            last_probs.update(samp_probs)
 
         # If no unknowns found, skip candidate creation and continue to periodic update / exit
         if not is_new_cand:

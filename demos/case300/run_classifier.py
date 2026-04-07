@@ -68,6 +68,16 @@ def parse_args():
                         help="Disable sensitivity pre-screen (enabled by default)")
     parser.add_argument("--no-diversity", action="store_true",
                         help="Use deterministic top-k instead of probabilistic selection")
+    parser.add_argument("--is-sampling", action="store_true",
+                        help="Enable importance sampling: bias search-phase samples toward degraded states")
+    parser.add_argument("--is-shift-factor", type=float, default=3.0,
+                        help="IS shift aggressiveness (default: 3.0)")
+    parser.add_argument("--is-mix-original", type=float, default=0.3,
+                        help="Fraction of original distribution mixed in for exploration (default: 0.3)")
+    parser.add_argument("--is-rebuild-every", type=int, default=20,
+                        help="Rebuild IS distribution every N rounds (default: 20)")
+    parser.add_argument("--prob-update-every", type=int, default=500,
+                        help="Run unbiased full probability estimate every N rounds (default: 500)")
     parser.add_argument("--output-dir", type=str, default="results_degradation",
                         help="Output directory (default: results_degradation)")
     return parser.parse_args()
@@ -172,6 +182,9 @@ def main():
     print(f"  Alpha:       {args.degradation_alpha}")
     print(f"  Sensitivity: {'disabled' if args.no_sensitivity else 'enabled'}")
     print(f"  Diversity:   {'disabled (top-k)' if args.no_diversity else 'enabled (probabilistic)'}")
+    print(f"  IS sampling: {'enabled' if args.is_sampling else 'disabled'}")
+    if args.is_sampling:
+        print(f"    shift={args.is_shift_factor}, mix={args.is_mix_original}, rebuild_every={args.is_rebuild_every}")
     if multi_devices:
         print(f"  Devices:     {multi_devices}")
     print(f"\nStarting rule extraction...\n", flush=True)
@@ -194,6 +207,11 @@ def main():
         comp_weights_init=comp_weights_init,
         sensitivity_prescreen=not args.no_sensitivity,
         degradation_diversity=not args.no_diversity,
+        is_sampling=args.is_sampling,
+        is_shift_factor=args.is_shift_factor,
+        is_mix_original=args.is_mix_original,
+        is_rebuild_every=args.is_rebuild_every,
+        prob_update_every=args.prob_update_every,
         classifier_seed_rules=seed_rules,
         output_dir=str(output_dir),
     )

@@ -533,3 +533,70 @@ class TestEndToEnd:
         )
 
         assert len(result["metrics_log"]) > 0
+
+    def test_is_sampling_with_seeds(self):
+        """Test that is_sampling=True with seed rules biases the search phase."""
+        from tsum.tsum import run_rule_extraction_by_mcs
+
+        n_vars = 4
+        n_state = 2
+        threshold = 3
+
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        row_names = list(probs_dict.keys())
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        sfun = _make_sum_sfun(threshold=threshold)
+
+        # Provide a seed rule so component importance is nonzero
+        seed_rules = [{"x0": ["<=", 0], "x1": ["<=", 0], "sys": ["<=", 0]}]
+
+        result = run_rule_extraction_by_mcs(
+            sfun=sfun,
+            probs=probs_t,
+            row_names=row_names,
+            n_state=n_state,
+            sys_surv_st=1,
+            unk_prob_thres=1e-1,
+            unk_prob_opt="abs",
+            n_sample=100_000,
+            sample_batch_size=50_000,
+            rank_by_degradation=True,
+            classifier_seed_rules=seed_rules,
+            is_sampling=True,
+            is_shift_factor=3.0,
+            is_mix_original=0.3,
+            is_rebuild_every=5,
+            output_dir="/tmp/test_is_sampling_seeds",
+        )
+
+        assert len(result["metrics_log"]) > 0
+
+    def test_is_sampling_skipped_without_signal(self):
+        """is_sampling without any importance signal should run safely (skipped)."""
+        from tsum.tsum import run_rule_extraction_by_mcs
+
+        n_vars = 4
+        n_state = 2
+        threshold = 3
+
+        probs_dict = _make_probs_dict(n_vars=n_vars, n_state=n_state)
+        row_names = list(probs_dict.keys())
+        probs_t = _make_probs_tensor(probs_dict, n_state)
+        sfun = _make_sum_sfun(threshold=threshold)
+
+        result = run_rule_extraction_by_mcs(
+            sfun=sfun,
+            probs=probs_t,
+            row_names=row_names,
+            n_state=n_state,
+            sys_surv_st=1,
+            unk_prob_thres=1e-1,
+            unk_prob_opt="abs",
+            n_sample=100_000,
+            sample_batch_size=50_000,
+            rank_by_degradation=True,
+            is_sampling=True,
+            output_dir="/tmp/test_is_sampling_no_signal",
+        )
+
+        assert len(result["metrics_log"]) > 0
