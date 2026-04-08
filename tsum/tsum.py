@@ -2159,27 +2159,46 @@ def run_rule_extraction_by_mcs(
 
             # ---- Survival-focused prior MC sweep ----
             # SuS drives samples into the failure tail, so survival rules
-            # never get mined from SuS samples alone. Do a small prior MC
-            # pass and append any unknown samples to the minimization queue.
+            # never get mined from SuS samples alone. Do a prior MC pass and
+            # append any unknown samples to the minimization queue. Processed
+            # in chunks of sample_batch_size to avoid spiking GPU memory when
+            # sus_surv_mc_samples is large (e.g., 1e6).
             if sus_surv_mc_samples > 0:
-                surv_samples = sample_categorical(probs, sus_surv_mc_samples)
-                surv_res = classify_samples_with_indices(
-                    surv_samples, rules_mat_surv, rules_mat_fail, return_masks=True
-                )
-                n_surv_unk = int(surv_res['idx_unknown'].numel())
-                if n_surv_unk > 0:
+                _surv_collected = []
+                _surv_c = {"survival": 0, "failure": 0, "unknown": 0}
+                _n_done = 0
+                while _n_done < sus_surv_mc_samples:
+                    _k = min(sample_batch_size, sus_surv_mc_samples - _n_done)
+                    _s = sample_categorical(probs, _k)
+                    _r = classify_samples_with_indices(
+                        _s, rules_mat_surv, rules_mat_fail, return_masks=True
+                    )
+                    _surv_c['survival'] += int(_r['survival'])
+                    _surv_c['failure']  += int(_r['failure'])
+                    _unk_k = int(_r['idx_unknown'].numel())
+                    _surv_c['unknown'] += _unk_k
+                    if _unk_k > 0:
+                        # Keep only the unknowns to bound memory.
+                        _surv_collected.append(_s[_r['idx_unknown']])
+                    _n_done += _k
+
+                if _surv_collected:
+                    surv_unk_samples = torch.cat(_surv_collected, dim=0)
                     is_new_cand = True
                     offset = int(samples.shape[0])
-                    new_idx = surv_res['idx_unknown'].to(device=device) + offset
-                    samples = torch.cat([samples, surv_samples], dim=0)
+                    new_idx = torch.arange(
+                        surv_unk_samples.shape[0], dtype=torch.long, device=device
+                    ) + offset
+                    samples = torch.cat([samples, surv_unk_samples], dim=0)
                     cur_idx = res['idx_unknown']
                     if cur_idx.numel() > 0:
                         res['idx_unknown'] = torch.cat([cur_idx, new_idx])
                     else:
                         res['idx_unknown'] = new_idx
-                counts['survival'] += int(surv_res['survival'])
-                counts['failure']  += int(surv_res['failure'])
-                counts['unknown']  += n_surv_unk
+
+                counts['survival'] += _surv_c['survival']
+                counts['failure']  += _surv_c['failure']
+                counts['unknown']  += _surv_c['unknown']
         else:
             for i in range(search_loops):
                 if _use_multi_gpu:
