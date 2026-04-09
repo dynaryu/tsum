@@ -62,6 +62,9 @@ def parse_args():
                    help="Extra prior-MC samples per round for survival-rule mining (default: 1000, 0 = off)")
     p.add_argument("--output-dir", type=str, default="results_subset",
                    help="Output directory under demos/case118/ (default: results_subset)")
+    p.add_argument("--resume-from", type=str, default="",
+                   help="Directory containing rules_geq_1.{json,pt} and rules_leq_0.{json,pt} "
+                        "from a previous run. If set, rule stores are loaded before rule extraction.")
     return p.parse_args()
 
 
@@ -149,10 +152,86 @@ def main():
     print(f"  surv MC samples:  {args.sus_surv_mc_samples} (per round, 0=off)")
     print(f"  prob_update_every: {args.prob_update_every} rounds")
     print(f"\n  severity_sign:    +1 (higher blackout %% = more failed)")
+
+    # ---------------------------------------------------------------
+    # Optional: resume from previous checkpoint
+    # ---------------------------------------------------------------
+    rules_surv_init = None
+    rules_fail_init = None
+    rules_mat_surv_init = None
+    rules_mat_fail_init = None
+    start_round = 0
+    if args.resume_from:
+        resume_dir = Path(args.resume_from)
+        if not resume_dir.is_absolute():
+            resume_dir = (HERE / resume_dir).resolve()
+        surv_json = resume_dir / "rules_geq_1.json"
+        fail_json = resume_dir / "rules_leq_0.json"
+        surv_pt = resume_dir / "rules_geq_1.pt"
+        fail_pt = resume_dir / "rules_leq_0.pt"
+        missing = [p for p in (surv_json, fail_json, surv_pt, fail_pt) if not p.exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"--resume-from: missing checkpoint files: {[str(p) for p in missing]}"
+            )
+        with open(surv_json) as f:
+            rules_surv_init = json.load(f)
+        with open(fail_json) as f:
+            rules_fail_init = json.load(f)
+        rules_mat_surv_init = torch.load(surv_pt, map_location=device).to(device)
+        rules_mat_fail_init = torch.load(fail_pt, map_location=device).to(device)
+
+        # Shape validation — guard against resuming with the wrong network.
+        n_vars = len(row_names)
+        if rules_mat_surv_init.numel() > 0 and rules_mat_surv_init.shape[1] != n_vars:
+            raise ValueError(
+                f"Checkpoint mismatch: rules_mat_surv has {rules_mat_surv_init.shape[1]} "
+                f"components but current problem has {n_vars}. Wrong --resume-from directory?"
+            )
+        if rules_mat_fail_init.numel() > 0 and rules_mat_fail_init.shape[1] != n_vars:
+            raise ValueError(
+                f"Checkpoint mismatch: rules_mat_fail has {rules_mat_fail_init.shape[1]} "
+                f"components but current problem has {n_vars}. Wrong --resume-from directory?"
+            )
+        if rules_mat_surv_init.numel() > 0 and rules_mat_surv_init.shape[2] != n_state:
+            raise ValueError(
+                f"Checkpoint mismatch: rules_mat_surv has n_state={rules_mat_surv_init.shape[2]} "
+                f"but current problem has n_state={n_state}."
+            )
+
+        # Derive round offset from previous metrics.json (last entry's "round").
+        metrics_prev = resume_dir / "metrics.json"
+        if metrics_prev.exists():
+            with open(metrics_prev) as f:
+                last_round_seen = 0
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line).get("round", 0)
+                        if isinstance(r, int) and r > last_round_seen:
+                            last_round_seen = r
+                    except json.JSONDecodeError:
+                        pass
+            start_round = last_round_seen
+
+        print(f"\n  Resuming from:    {resume_dir}")
+        print(f"    Survival rules loaded: {len(rules_surv_init)} "
+              f"(mat shape {tuple(rules_mat_surv_init.shape)})")
+        print(f"    Failure  rules loaded: {len(rules_fail_init)} "
+              f"(mat shape {tuple(rules_mat_fail_init.shape)})")
+        print(f"    Resume round offset:   {start_round} "
+              f"(next round will be {start_round + 1})")
+
     print(f"\nStarting rule extraction...\n", flush=True)
 
     t0 = time.time()
     result = tsum.run_rule_extraction_by_mcs(
+        rules_surv=rules_surv_init,
+        rules_fail=rules_fail_init,
+        rules_mat_surv=rules_mat_surv_init,
+        rules_mat_fail=rules_mat_fail_init,
         sfun=sfun,
         probs=probs_tensor,
         row_names=row_names,
@@ -173,6 +252,7 @@ def main():
         sus_n_flip_mean=args.sus_n_flip_mean,
         sus_severity_sign=+1,
         sus_surv_mc_samples=args.sus_surv_mc_samples,
+        start_round=start_round,
         output_dir=output_dir,
     )
     elapsed = time.time() - t0

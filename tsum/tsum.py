@@ -1976,6 +1976,8 @@ def run_rule_extraction_by_mcs(
     sus_n_flip_mean: float = 5.0,
     sus_severity_sign: int = +1,
     sus_surv_mc_samples: int = 1000,  # extra prior-MC sweep for survival-rule mining
+    # Resume support
+    start_round: int = 0,  # offset for the round counter (used when resuming a prior run)
     # Output control
     output_dir: str = "tsum_res",
     surv_json_name: str = None,
@@ -2019,7 +2021,7 @@ def run_rule_extraction_by_mcs(
     device = probs.device
 
     unk_prob = 1.0
-    n_round = 0
+    n_round = int(start_round)
     metrics_log: List[Dict[str, Any]] = []
 
     n_vars = len(row_names)
