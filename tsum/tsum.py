@@ -2131,7 +2131,7 @@ def run_rule_extraction_by_mcs(
         print(f"No. of non-dominant rules: {len(rules_mat_surv)+len(rules_mat_fail)}, "
               f"Survival rules: {len(rules_mat_surv)}, Failure rules: {len(rules_mat_fail)}")
 
-        _n_fail_before = len(rules_mat_fail)
+        _fail_added_this_round = False
         is_new_cand = False
         counts = {"survival": 0, "failure": 0, "unknown": 0}
         res = None
@@ -2403,6 +2403,11 @@ def run_rule_extraction_by_mcs(
                 _save_pt(rules_mat_surv, rules_surv_pt_path)
                 _save_pt(rules_mat_fail, rules_fail_pt_path)
 
+            # No unknowns found this round — counts as stale for fail-rule tracking
+            _stale_count += 1
+            if max_stale_rounds > 0 and _stale_count >= max_stale_rounds:
+                print(f"No new failure rules for {_stale_count} consecutive rounds. Terminating.")
+                break
             continue  # go to next while-check (likely exit if unk_prob <= thresh)
 
         # --- We have unknowns: extract unknown(s) and build rule(s) ---
@@ -2450,6 +2455,8 @@ def run_rule_extraction_by_mcs(
                 rules_fail, rules_mat_fail, n_add, n_rem = update_rules_batch(
                     new_fail_dicts, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
                 print(f"Failure: {n_add} rules added, {n_rem} removed (from {len(new_fail_dicts)} candidates)")
+                if n_add > 0:
+                    _fail_added_this_round = True
 
             if sys_val_list:
                 sys_val_list.sort(key=mixed_sort_key)
@@ -2489,7 +2496,10 @@ def run_rule_extraction_by_mcs(
                 rules_surv, rules_mat_surv = update_rules(min_comps_st, rules_surv, rules_mat_surv, row_names, verbose=rule_update_verbose)
             else:
                 print("Failure sample found from sampling.")
+                _nf_before = len(rules_fail)
                 rules_fail, rules_mat_fail = update_rules(min_comps_st, rules_fail, rules_mat_fail, row_names, verbose=rule_update_verbose)
+                if len(rules_fail) != _nf_before:
+                    _fail_added_this_round = True
 
             print(f"New rule added. System state: {sys_st}, System value: {fval}. Total samples: {n_sample_actual}.")
             print(f"New rule (No. of conditions: {len(min_comps_st)-1}): {min_comps_st}")
@@ -2578,7 +2588,7 @@ def run_rule_extraction_by_mcs(
             break
 
         # Track consecutive rounds with no new failure rules
-        if len(rules_mat_fail) > _n_fail_before:
+        if _fail_added_this_round:
             _stale_count = 0
         else:
             _stale_count += 1
