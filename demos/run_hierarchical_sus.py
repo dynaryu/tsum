@@ -432,6 +432,7 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
         sus_p0=args.sus_p0,
         sus_max_levels=args.sus_max_levels,
         sus_n_flip_mean=args.sus_n_flip_mean,
+        sus_surv_mc_samples=args.sus_surv_mc_samples,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
@@ -507,6 +508,7 @@ def run_phase2(zone_dir_names, probs_dict, all_row_names, n_state, sfun,
         sus_p0=args.sus_p0,
         sus_max_levels=args.sus_max_levels,
         sus_n_flip_mean=args.sus_n_flip_mean,
+        sus_surv_mc_samples=args.sus_surv_mc_samples,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
@@ -557,6 +559,8 @@ def parse_args():
                         help="SuS max levels (default: 10)")
     parser.add_argument("--sus-n-flip-mean", type=float, default=5.0,
                         help="SuS mean component flips per MCMC step (default: 5.0)")
+    parser.add_argument("--sus-surv-mc-samples", type=int, default=1_000_000,
+                        help="Extra prior-MC samples per round for survival rule mining (default: 1000000)")
     parser.add_argument("--prob-update-every", type=int, default=500,
                         help="Unbiased probability refresh interval (default: 500)")
     return parser.parse_args()
