@@ -418,11 +418,12 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
         n_state=n_state,
         sys_surv_st=1,
         rules_fail=seed_fail_rules if seed_fail_rules else None,
-        unk_prob_thres=args.unk_prob_thres,
+        unk_prob_thres=0,  # not meaningful in Phase 1 (no surv rules); rely on max_stale_rounds
         unk_prob_opt='abs',
         n_sample=args.n_sample,
         sample_batch_size=args.sample_batch_size,
         max_rounds=args.max_rounds,
+        max_stale_rounds=args.max_stale_rounds,
         n_workers=args.n_workers,
         devices=multi_devices,
         prob_update_every=args.prob_update_every,
@@ -544,6 +545,8 @@ def parse_args():
     parser.add_argument("--n-sample", type=int, default=10_000_000)
     parser.add_argument("--sample-batch-size", type=int, default=100_000)
     parser.add_argument("--max-rounds", type=int, default=5000)
+    parser.add_argument("--max-stale-rounds", type=int, default=10,
+                        help="Phase 1: stop after N rounds with no new fail rules (0=disabled)")
     parser.add_argument("--n-workers", type=int, default=1)
     parser.add_argument("--devices", type=str, default="")
     parser.add_argument("--seed-rules", type=str, default="",

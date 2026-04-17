@@ -1996,6 +1996,7 @@ def run_rule_extraction_by_mcs(
     unk_prob_thres: float = 1e-2,
     unk_prob_opt: str = "rel", # "abs" or "rel"
     max_rounds: int = 10000,     # hard cap on rounds to prevent infinite loops
+    max_stale_rounds: int = 0,   # stop after N consecutive rounds with no new fail rules (0 = disabled)
     # Frequencies / sampling settings
     prob_update_every: int = 500,
     save_every: int = 10,
@@ -2118,6 +2119,7 @@ def run_rule_extraction_by_mcs(
     search_loops = min(max_search_loops, total_loops) if max_search_loops > 0 else total_loops
 
     # ---- main loop ----
+    _stale_count = 0  # consecutive rounds with no new failure rules
     while is_new_cand and (unk_prob > unk_prob_thres if unk_prob_opt == "abs" else unk_prob / (min([last_probs["failure"]+1e-12, last_probs["survival"]+1e-12])) > unk_prob_thres):
         n_round += 1
         t0 = time.perf_counter()
@@ -2129,6 +2131,7 @@ def run_rule_extraction_by_mcs(
         print(f"No. of non-dominant rules: {len(rules_mat_surv)+len(rules_mat_fail)}, "
               f"Survival rules: {len(rules_mat_surv)}, Failure rules: {len(rules_mat_fail)}")
 
+        _n_fail_before = len(rules_mat_fail)
         is_new_cand = False
         counts = {"survival": 0, "failure": 0, "unknown": 0}
         res = None
@@ -2572,6 +2575,15 @@ def run_rule_extraction_by_mcs(
 
         if n_round >= max_rounds:
             print(f"Reached maximum rounds ({max_rounds}). Terminating.")
+            break
+
+        # Track consecutive rounds with no new failure rules
+        if len(rules_mat_fail) > _n_fail_before:
+            _stale_count = 0
+        else:
+            _stale_count += 1
+        if max_stale_rounds > 0 and _stale_count >= max_stale_rounds:
+            print(f"No new failure rules for {_stale_count} consecutive rounds. Terminating.")
             break
 
     # Final flush of any remaining metrics not yet written by save_every
