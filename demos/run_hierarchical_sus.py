@@ -432,7 +432,7 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
         sus_p0=args.sus_p0,
         sus_max_levels=args.sus_max_levels,
         sus_n_flip_mean=args.sus_n_flip_mean,
-        sus_surv_mc_samples=args.sus_surv_mc_samples,
+        sus_surv_mc_samples=0,  # skip survival mining — zone surv rules are invalid for full model
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
@@ -658,9 +658,6 @@ def main():
                 return
             for combo, shed_pct in feasible_combos:
                 groups_to_run.append(list(combo))
-            # Also run individual zones (for survival rule coverage)
-            for zid in all_zone_ids:
-                groups_to_run.append([zid])
 
         elif args.zone is not None:
             # Parse --zone argument: "2,3" or "2,3;0,2"
