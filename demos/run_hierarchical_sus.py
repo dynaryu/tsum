@@ -448,7 +448,13 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
 
 def run_phase2(zone_dir_names, probs_dict, all_row_names, n_state, sfun,
                device, args):
-    """Combine zone rules and run full-model SuS."""
+    """Combine zone fail rules and run full-model plain MCS.
+
+    Phase 1 (SuS per zone) finds failure rules efficiently.
+    Phase 2 uses plain MCS on the full model — prior MC samples are mostly
+    survival states, so this naturally discovers survival rules while also
+    picking up any failure rules the zones missed.
+    """
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from tsum import tsum
@@ -469,6 +475,15 @@ def run_phase2(zone_dir_names, probs_dict, all_row_names, n_state, sfun,
 
         # Note: surv rules from zone runs are NOT valid for the full model
         # (they assumed other zones at best state). We skip them.
+
+    # Also load any additional seed rules
+    if args.seed_rules:
+        seed_path = Path(args.seed_rules)
+        if seed_path.exists():
+            with open(seed_path) as f:
+                extra_seeds = json.load(f)
+            print(f"  Extra seed rules: {len(extra_seeds)}")
+            combined_fail.extend(extra_seeds)
 
     print(f"\n  Combined fail rules (seeds): {len(combined_fail)}")
     print(f"  Surv rules: starting from scratch (zone surv rules not valid)")
@@ -503,13 +518,11 @@ def run_phase2(zone_dir_names, probs_dict, all_row_names, n_state, sfun,
         n_workers=args.n_workers,
         devices=multi_devices,
         prob_update_every=args.prob_update_every,
-        # Subset Simulation
-        use_subset_sim=True,
-        sus_n_per_level=args.sus_n_per_level,
-        sus_p0=args.sus_p0,
-        sus_max_levels=args.sus_max_levels,
-        sus_n_flip_mean=args.sus_n_flip_mean,
-        sus_surv_mc_samples=args.sus_surv_mc_samples,
+        # Plain MCS — no SuS. Prior MC samples are mostly survival states,
+        # so this efficiently discovers survival rules. Failure rules from
+        # zone seeds are already loaded; new ones found when MC hits rare
+        # failure states.
+        use_subset_sim=False,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
