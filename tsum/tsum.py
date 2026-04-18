@@ -1099,7 +1099,9 @@ def sample_new_comp_st_to_test(probs, rules_mat, B=1_024, max_iters=1_000):
             return None, all_samples
 
 
-def _check_any_subset(samples_flat, not_rules_flat, sample_chunk=10000):
+def _check_any_subset(samples_flat, not_rules_flat, sample_chunk=None,
+                      rule_chunk=None,
+                      mem_budget_bytes: int = 512 * 1024 * 1024):
     """
     Check which samples are subsets of at least one rule using matmul.
 
@@ -1108,7 +1110,12 @@ def _check_any_subset(samples_flat, not_rules_flat, sample_chunk=10000):
     Args:
         samples_flat: (B, D) float tensor (flattened binary samples)
         not_rules_flat: (N_rules, D) float tensor (flattened ~rules)
-        sample_chunk: process this many samples at a time to bound memory
+        sample_chunk: process this many samples at a time (auto-sized if None).
+        rule_chunk:   process this many rules   at a time (auto-sized if None).
+            Both dimensions are tiled so that the intermediate (sample_chunk,
+            rule_chunk) matmul output tensor stays within ``mem_budget_bytes``.
+        mem_budget_bytes: target upper bound for the intermediate matmul
+            output tensor. Default 512 MiB.
 
     Returns:
         (B,) bool tensor — True if sample is subset of any rule
@@ -1117,11 +1124,34 @@ def _check_any_subset(samples_flat, not_rules_flat, sample_chunk=10000):
     device = samples_flat.device
     result = torch.zeros(B, dtype=torch.bool, device=device)
 
-    for start in range(0, B, sample_chunk):
-        end = min(start + sample_chunk, B)
-        # (chunk, D) @ (D, N_rules) → (chunk, N_rules): count of violations
-        violations = samples_flat[start:end] @ not_rules_flat.T
-        result[start:end] = (violations == 0).any(dim=1)
+    n_rules = not_rules_flat.shape[0]
+    if B == 0 or n_rules == 0:
+        return result
+
+    bytes_per_elem = not_rules_flat.element_size()
+    budget_elems = max(1, mem_budget_bytes // bytes_per_elem)
+
+    if sample_chunk is None and rule_chunk is None:
+        side = max(1, int(budget_elems ** 0.5))
+        rule_chunk = min(n_rules, side)
+        sample_chunk = min(B, max(1, budget_elems // rule_chunk))
+    elif rule_chunk is None:
+        rule_chunk = min(n_rules, max(1, budget_elems // max(1, sample_chunk)))
+    elif sample_chunk is None:
+        sample_chunk = min(B, max(1, budget_elems // max(1, rule_chunk)))
+
+    for s_start in range(0, B, sample_chunk):
+        s_end = min(s_start + sample_chunk, B)
+        samples_block = samples_flat[s_start:s_end]
+        hit = torch.zeros(s_end - s_start, dtype=torch.bool, device=device)
+        for r_start in range(0, n_rules, rule_chunk):
+            if hit.all():
+                break
+            r_end = min(r_start + rule_chunk, n_rules)
+            rules_block_t = not_rules_flat[r_start:r_end].T
+            violations = samples_block @ rules_block_t
+            hit |= (violations == 0).any(dim=1)
+        result[s_start:s_end] = hit
 
     return result
 
@@ -1475,9 +1505,17 @@ def run_rule_extraction(
 
     n_vars = len(row_names)
     if rules_mat_surv is None:
-        rules_mat_surv = torch.empty((0,n_vars,n_state), dtype=torch.int32, device=device)
+        if rules_surv:
+            mats = [from_rule_dict_to_mat(r, row_names, n_state) for r in rules_surv]
+            rules_mat_surv = torch.stack(mats, dim=0).to(device)
+        else:
+            rules_mat_surv = torch.empty((0,n_vars,n_state), dtype=torch.int32, device=device)
     if rules_mat_fail is None:
-        rules_mat_fail = torch.empty((0,n_vars,n_state), dtype=torch.int32, device=device)
+        if rules_fail:
+            mats = [from_rule_dict_to_mat(r, row_names, n_state) for r in rules_fail]
+            rules_mat_fail = torch.stack(mats, dim=0).to(device)
+        else:
+            rules_mat_fail = torch.empty((0,n_vars,n_state), dtype=torch.int32, device=device)
 
     # Threshold discovery bookkeeping
     sys_val_list = []
@@ -2120,9 +2158,17 @@ def run_rule_extraction_by_mcs(
 
     n_vars = len(row_names)
     if rules_mat_surv is None:
-        rules_mat_surv = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
+        if rules_surv:
+            mats = [from_rule_dict_to_mat(r, row_names, n_state) for r in rules_surv]
+            rules_mat_surv = torch.stack(mats, dim=0).to(device)
+        else:
+            rules_mat_surv = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
     if rules_mat_fail is None:
-        rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
+        if rules_fail:
+            mats = [from_rule_dict_to_mat(r, row_names, n_state) for r in rules_fail]
+            rules_mat_fail = torch.stack(mats, dim=0).to(device)
+        else:
+            rules_mat_fail = torch.empty((0, n_vars, n_state), dtype=torch.int32, device=device)
 
     # Component importance weights for degradation ranking
     # Updated from both survival and failure rules, weighted by 1/rule_size.
