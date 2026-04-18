@@ -158,13 +158,20 @@ def main():
     # ---------------------------------------------------------------
     # Load seed failure rules if provided
     seed_rules = None
+    seed_rules_mat = None
     if args.seed_rules:
         seed_path = Path(args.seed_rules)
         if not seed_path.is_absolute():
             seed_path = HERE / seed_path
-        with open(seed_path) as f:
-            seed_rules = json.load(f)
-        print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
+        # Support both .json and .pt formats
+        if seed_path.suffix == '.pt':
+            data = torch.load(seed_path, map_location=device, weights_only=True)
+            seed_rules_mat = data['rules_mat'].to(device)
+            print(f"\n  Seed rules:  {seed_rules_mat.shape[0]} failure rules from {seed_path.name} (tensor)")
+        else:
+            with open(seed_path) as f:
+                seed_rules = json.load(f)
+            print(f"\n  Seed rules:  {len(seed_rules)} failure rules from {seed_path.name}")
 
     # Build per-component initial weights by type
     comp_weights_init = {}
@@ -199,6 +206,8 @@ def main():
         row_names=row_names,
         n_state=n_state,
         sys_surv_st=1,
+        rules_fail=seed_rules,           # seed classification (JSON list)
+        rules_mat_fail=seed_rules_mat,    # seed classification (pre-converted tensor)
         unk_prob_thres=args.unk_prob_thres,
         unk_prob_opt='abs',
         n_sample=args.n_sample,
