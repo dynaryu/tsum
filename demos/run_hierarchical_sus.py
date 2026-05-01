@@ -424,6 +424,10 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
         sample_batch_size=args.sample_batch_size,
         max_rounds=args.max_rounds,
         max_stale_rounds=args.max_stale_rounds,
+        p_fail_rel_tol=args.p_fail_rel_tol,
+        p_fail_k_sigma=args.p_fail_k_sigma,
+        p_fail_window=args.p_fail_window,
+        p_fail_stale_rounds=args.p_fail_stale_rounds,
         n_workers=args.n_workers,
         devices=multi_devices,
         prob_update_every=args.prob_update_every,
@@ -515,6 +519,10 @@ def run_phase2(zone_dir_names, probs_dict, all_row_names, n_state, sfun,
         n_sample=args.n_sample,
         sample_batch_size=args.sample_batch_size,
         max_rounds=args.max_rounds,
+        p_fail_rel_tol=args.p_fail_rel_tol,
+        p_fail_k_sigma=args.p_fail_k_sigma,
+        p_fail_window=args.p_fail_window,
+        p_fail_stale_rounds=args.p_fail_stale_rounds,
         n_workers=args.n_workers,
         devices=multi_devices,
         prob_update_every=args.prob_update_every,
@@ -560,6 +568,18 @@ def parse_args():
     parser.add_argument("--max-rounds", type=int, default=5000)
     parser.add_argument("--max-stale-rounds", type=int, default=10,
                         help="Phase 1: stop after N rounds with no new fail rules (0=disabled)")
+    parser.add_argument("--p-fail-rel-tol", type=float, default=0.0,
+                        help="Coverage-plateau termination: stop when relative p_failure "
+                             "change over a refresh window stays below this. "
+                             "0 = disabled. Try 0.05.")
+    parser.add_argument("--p-fail-k-sigma", type=float, default=2.0,
+                        help="Noise floor multiplier for the plateau check (default: 2.0).")
+    parser.add_argument("--p-fail-window", type=int, default=10,
+                        help="Refresh-windows used for the cumulative p_failure delta "
+                             "(default: 10).")
+    parser.add_argument("--p-fail-stale-rounds", type=int, default=3,
+                        help="Consecutive plateau windows required to terminate "
+                             "(default: 3).")
     parser.add_argument("--n-workers", type=int, default=1)
     parser.add_argument("--devices", type=str, default="")
     parser.add_argument("--seed-rules", type=str, default="",

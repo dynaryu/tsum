@@ -2005,6 +2005,15 @@ def run_rule_extraction_by_mcs(
     unk_prob_opt: str = "rel", # "abs" or "rel"
     max_rounds: int = 10000,     # hard cap on rounds to prevent infinite loops
     max_stale_rounds: int = 0,   # stop after N consecutive rounds with no new fail rules (0 = disabled)
+    # Coverage-plateau termination: stop when p_failure stops growing meaningfully.
+    # Compares p_failure at the current refresh vs `p_fail_window` refreshes ago;
+    # the change must stay below max(p_fail_rel_tol * p_now, p_fail_k_sigma * binomial_sigma)
+    # for `p_fail_stale_rounds` consecutive refresh windows.
+    # Set p_fail_rel_tol = 0.0 to disable.
+    p_fail_rel_tol: float = 0.0,
+    p_fail_k_sigma: float = 2.0,
+    p_fail_window: int = 10,
+    p_fail_stale_rounds: int = 3,
     # Frequencies / sampling settings
     prob_update_every: int = 500,
     save_every: int = 10,
@@ -2136,6 +2145,62 @@ def run_rule_extraction_by_mcs(
 
     # ---- main loop ----
     _stale_count = 0  # consecutive rounds with no new failure rules
+    _p_fail_history = []        # list of (round, p_failure, n_sample_actual) at each refresh
+    _p_fail_stale_count = 0     # consecutive refresh windows below the noise+rel threshold
+
+    def _check_p_fail_plateau() -> bool:
+        """Return True if p_failure has plateaued and the run should terminate.
+
+        Compares the mean of the most recent `p_fail_window` refreshes against
+        the mean of the `p_fail_window` refreshes before those. Averaging shrinks
+        the binomial noise by √K so cumulative real growth dominates the noise
+        floor, while at a true plateau both means converge and Δ→0.
+
+        Increments a stale counter when |Δ_means| stays below
+            max(rel_tol * p_recent_mean,  k_sigma * σ_Δmeans),
+        where σ_Δmeans = σ_single * √(2/K) is the std of the difference of
+        two K-sample means under the binomial-noise assumption. Resets when it
+        isn't. Terminates when the stale counter reaches `p_fail_stale_rounds`.
+        """
+        nonlocal _p_fail_stale_count
+        if p_fail_rel_tol <= 0.0:
+            return False
+        if len(_p_fail_history) < 2 * p_fail_window:
+            return False
+        recent = _p_fail_history[-p_fail_window:]
+        prior = _p_fail_history[-2 * p_fail_window:-p_fail_window]
+        if any(p is None or n is None or n <= 0 for _, p, n in recent + prior):
+            return False
+        p_recent = sum(p for _, p, _ in recent) / p_fail_window
+        p_prior = sum(p for _, p, _ in prior) / p_fail_window
+        n_recent = sum(n for _, _, n in recent) / p_fail_window
+        delta = abs(p_recent - p_prior)
+        p_clip = min(max(p_recent, 1e-12), 1.0 - 1e-12)
+        sigma_single = math.sqrt(p_clip * (1.0 - p_clip) / n_recent)
+        sigma_delta_means = sigma_single * math.sqrt(2.0 / p_fail_window)
+        threshold = max(p_fail_rel_tol * p_recent, p_fail_k_sigma * sigma_delta_means)
+        if delta < threshold:
+            _p_fail_stale_count += 1
+        else:
+            _p_fail_stale_count = 0
+        if _p_fail_stale_count >= p_fail_stale_rounds:
+            print(
+                f"\np_failure coverage plateaued at {p_recent:.3e} "
+                f"(window mean over last {p_fail_window} refreshes) "
+                f"for {_p_fail_stale_count} consecutive checks "
+                f"(|Δmean|={delta:.3e} < "
+                f"max({p_fail_rel_tol*p_recent:.3e}, {p_fail_k_sigma*sigma_delta_means:.3e})). "
+                f"Terminating."
+            )
+            print(
+                "  Hint: if this is below your target failure mass, the run is in "
+                "mode collapse. Try seeding rules from prior runs, increasing "
+                "--sus-n-flip-mean, raising --sus-n-per-level, or running an "
+                "ensemble of SuS jobs and merging rules."
+            )
+            return True
+        return False
+
     while is_new_cand and (unk_prob > unk_prob_thres if unk_prob_opt == "abs" else unk_prob / (min([last_probs["failure"]+1e-12, last_probs["survival"]+1e-12])) > unk_prob_thres):
         n_round += 1
         t0 = time.perf_counter()
@@ -2382,6 +2447,7 @@ def run_rule_extraction_by_mcs(
                 last_probs.update(sp2)
                 n_sample_actual = sample_batch_size * loops
                 probs_updated = True
+                _p_fail_history.append((n_round, sp2["failure"], n_sample_actual))
 
             # metrics, persist, then break condition handled by while guard
             dt = time.perf_counter() - t0
@@ -2423,6 +2489,8 @@ def run_rule_extraction_by_mcs(
             _stale_count += 1
             if max_stale_rounds > 0 and _stale_count >= max_stale_rounds:
                 print(f"No new failure rules for {_stale_count} consecutive rounds. Terminating.")
+                break
+            if probs_updated and _check_p_fail_plateau():
                 break
             continue  # go to next while-check (likely exit if unk_prob <= thresh)
 
@@ -2561,6 +2629,7 @@ def run_rule_extraction_by_mcs(
             last_probs.update(sp2)
             n_sample_actual = sample_batch_size * loops
             probs_updated = True
+            _p_fail_history.append((n_round, sp2["failure"], n_sample_actual))
 
         # ---- metrics for this round ----
         _t_probs = time.perf_counter() - _ts
@@ -2610,6 +2679,8 @@ def run_rule_extraction_by_mcs(
             _stale_count += 1
         if max_stale_rounds > 0 and _stale_count >= max_stale_rounds:
             print(f"No new failure rules for {_stale_count} consecutive rounds. Terminating.")
+            break
+        if probs_updated and _check_p_fail_plateau():
             break
 
     # Final flush of any remaining metrics not yet written by save_every
