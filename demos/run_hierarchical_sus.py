@@ -406,6 +406,21 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
     print(f"  Fixed at best: {len(all_row_names) - n_var} components")
     print(f"  Output: {output_dir}")
 
+    # Full-model run (no components fixed at best): zone-conditional caveats
+    # don't apply, so honour the user's --sus-surv-mc-samples and
+    # --unk-prob-thres. Per-zone runs still hard-override to 0 since zone-local
+    # surv rules / unk probabilities aren't valid for the full model.
+    is_full_model = (n_var == len(all_row_names))
+    if is_full_model:
+        eff_surv_mc_samples = args.sus_surv_mc_samples
+        eff_unk_prob_thres = args.unk_prob_thres
+        print(f"  Full-model run: surv mining ON "
+              f"(sus_surv_mc_samples={eff_surv_mc_samples}), "
+              f"unk_prob_thres={eff_unk_prob_thres}")
+    else:
+        eff_surv_mc_samples = 0
+        eff_unk_prob_thres = 0
+
     device_list = ([d.strip() for d in args.devices.split(",") if d.strip()]
                    if args.devices else [])
     multi_devices = device_list if len(device_list) > 1 else None
@@ -418,7 +433,7 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
         n_state=n_state,
         sys_surv_st=1,
         rules_fail=seed_fail_rules if seed_fail_rules else None,
-        unk_prob_thres=0,  # not meaningful in Phase 1 (no surv rules); rely on max_stale_rounds
+        unk_prob_thres=eff_unk_prob_thres,
         unk_prob_opt='abs',
         n_sample=args.n_sample,
         sample_batch_size=args.sample_batch_size,
@@ -437,7 +452,7 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
         sus_p0=args.sus_p0,
         sus_max_levels=args.sus_max_levels,
         sus_n_flip_mean=args.sus_n_flip_mean,
-        sus_surv_mc_samples=0,  # skip survival mining — zone surv rules are invalid for full model
+        sus_surv_mc_samples=eff_surv_mc_samples,
         output_dir=str(output_dir),
     )
     elapsed = time.time() - t0
