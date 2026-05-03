@@ -614,6 +614,10 @@ def parse_args():
                         help="Extra prior-MC samples per round for survival rule mining (default: 1000000)")
     parser.add_argument("--prob-update-every", type=int, default=500,
                         help="Unbiased probability refresh interval (default: 500)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed all RNGs (torch, numpy, random) for reproducibility. "
+                             "Use different seeds across ensemble runs to diversify "
+                             "MCMC trajectories.")
     return parser.parse_args()
 
 
@@ -635,6 +639,19 @@ def main():
     print("=" * 60)
     print(f"Hierarchical SuS — {args.case} — Phase {args.phase}")
     print("=" * 60)
+
+    # Seed RNGs early so any downstream sampling (spectral partition tie-breaks,
+    # SuS prior MC, MCMC chains) is reproducible. Workers forked later inherit
+    # this state via fork() but each worker doesn't get a unique seed; that's
+    # acceptable for ensemble use — diversity comes from different parent seeds.
+    if args.seed is not None:
+        import random
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        print(f"  Seeded RNGs with seed={args.seed}")
 
     # 1. Get zone partition
     bus_zone, bus_load, gen_buses, gen_cap, branch_buses = get_zones(
