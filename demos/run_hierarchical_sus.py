@@ -396,7 +396,20 @@ def run_phase1_zone(zone_ids_group, zone_comps, probs_dict, all_row_names,
                 comps = {k for k in r if k != "sys"}
                 if comps <= zone_comp_set:
                     seed_fail_rules.append(r)
-            if seed_fail_rules:
+            n_zone_filtered = len(seed_fail_rules)
+            # Optionally keep only a random fraction. Forces SuS to re-explore
+            # the dropped basins from scratch, which can surface modes the full
+            # seed pool fundamentally precluded the chains from reaching.
+            frac = getattr(args, "seed_rules_fraction", 1.0)
+            if frac < 1.0 and seed_fail_rules:
+                import random as _rand
+                rng = _rand.Random(args.seed if args.seed is not None else 0)
+                k = max(1, int(round(frac * n_zone_filtered)))
+                seed_fail_rules = rng.sample(seed_fail_rules, k)
+                print(f"  Seed fail rules for zone {group_label}: "
+                      f"{k} (decimated from {n_zone_filtered}, "
+                      f"keep_fraction={frac:.3f}, rng_seed={args.seed})")
+            elif seed_fail_rules:
                 print(f"  Seed fail rules for zone {group_label}: "
                       f"{len(seed_fail_rules)}")
 
@@ -599,6 +612,12 @@ def parse_args():
     parser.add_argument("--devices", type=str, default="")
     parser.add_argument("--seed-rules", type=str, default="",
                         help="Path to seed failure rules JSON")
+    parser.add_argument("--seed-rules-fraction", type=float, default=1.0,
+                        help="Keep only this random fraction of zone-filtered seed "
+                             "rules (default: 1.0 = use all). E.g. 0.2 keeps 20%% — "
+                             "forces SuS to rediscover dropped modes, which can "
+                             "surface failure basins the full seed pool kept the "
+                             "chains away from. Sampling RNG uses --seed if set.")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: results_hierarchical)")
     # Subset Simulation parameters
